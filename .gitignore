@@ -1,10 +1,17 @@
+# Secrets. .env.example is the template; .env is yours and never leaves here.
+.env
+
 .venv/
 __pycache__/
 *.pyc
-.env
 .pytest_cache/
+
+# Everything a run produces. Traces and screenshots belong to one run and to
+# the machine that made it — CI uploads them as build artifacts instead.
 artifacts/
+artifacts-repro/
 profiles/
 extension/
+*.log
 report.json
 junit.xml

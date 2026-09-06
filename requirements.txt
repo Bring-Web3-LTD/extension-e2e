@@ -8,3 +8,8 @@ pytest-xdist>=3.5          # tests in parallel; run.py degrades without it
 boto3>=1.34                # ECS, CloudFormation, S3
 requests>=2.31
 python-dotenv>=1.0
+
+# Only for seeding notification rows into the temporary environment (section 3).
+# Without them those tests skip; everything else runs.
+pymysql>=1.1
+sshtunnel>=0.4            # the database sits behind a bastion

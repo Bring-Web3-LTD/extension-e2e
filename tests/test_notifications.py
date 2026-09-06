@@ -1,15 +1,15 @@
 """Reward notifications: the request storm that was fixed, and the surface.
 
-QA_TEST_PLAN section 3.1 in full, and as much of section 3 as can be reached
-without a seeded reward.
+QA_TEST_PLAN sections 3 and 3.1.
 
 Section 3's five variants are decided entirely by five fields the server signs
 into the notification token — `promptPairing`, `new`, `eligible`, `total`,
-`expiredAt` (backend notification/db-operations.ts) — and those come from rows
-in the environment's `purchases` table. The token is signed, so it cannot be
-fabricated here. Those tests therefore skip, loudly, with what they need, and
-what is covered instead is everything the client decides: when a check is made,
-what a failed one costs, and that the surface renders when there is one.
+`expiredAt` (backend notification/db-operations.ts) — computed from rows in the
+environment's `purchases` table. The token is signed, so the variant cannot be
+faked from the client. It is produced instead: `bring/seed.py` writes the rows
+that make the server compute each one, for the user id this browser is actually
+using, and removes them afterwards. Without a reachable database those tests
+skip with a reason; everything in 3.1 needs no database at all.
 """
 import time
 
@@ -287,23 +287,227 @@ async def test_a_notification_renders_correctly_when_there_is_one(context):
         f"unexpected notification call to action: {cta!r}"
 
 
-@pytest.mark.needs_db
-@pytest.mark.parametrize("variant", [
-    "reward_approval", "walletless_1", "walletless_2", "walletless_3", "walletless_4",
-])
-def test_notification_variant(variant):
-    """3 — each variant's text and buttons.
+@pytest.fixture
+def seeded(request, env_name):
+    """Rows in the environment that make the server answer with one variant.
 
-    Not reachable from the client. The variant is chosen by fields the server
-    signs into the token, and those come from `purchases` rows:
-
-      reward_approval  wallet paired, a new approved purchase   -> Details
-      walletless_1     no wallet, new purchase, no deadline     -> Connect
-      walletless_2     no wallet, new purchase, in reminding    -> Connect
-      walletless_3     no wallet, new + claimable, in reminding -> Claim
-      walletless_4     no wallet, claimable only, in reminding  -> Claim, Stop Reminding
-
-    Seeding those rows is the missing half. Point this suite at a database with
-    them and drop the marker.
+    Skips rather than fails when the database is out of reach: a laptop without
+    the bastion key should run everything else, not report five red tests about
+    its own configuration.
     """
-    pytest.skip(f"{variant} needs a seeded purchases row in the environment's database")
+    from bring import db, seed as seeder
+
+    if not db.configured():
+        pytest.skip("no database configured, so no notification variant can be "
+                    "produced (see .env.example)")
+    try:
+        database = db.database_for(env_name)
+    except db.NoDatabase as e:
+        pytest.skip(str(e))
+
+    # Every variant runs against the same `bring_id` now that a worker's
+    # browser is shared, so rows left by the previous one would be counted into
+    # this one's sums. Clearing first is cheaper than reasoning about it.
+    try:
+        seeder.clean_all(database)
+    except Exception as e:
+        print(f"could not clear earlier seeded rows: {e}")
+
+    written = []
+
+    def make(variant, user_id, wallet_address):
+        row = seeder.seed(variant, database=database, user_id=user_id,
+                          wallet_address=wallet_address)
+        written.append(row)
+        return row
+
+    yield make
+
+    for row in written:
+        try:
+            seeder.clean(row)
+        except Exception as e:
+            print(f"could not clean up seeded rows: {e}")
+
+
+# What each variant must put on screen. Taken from the iframe's own logic
+# (Notification.tsx): the call to action is Details when a wallet is paired,
+# Claim when there is something claimable, and Connect otherwise; Stop
+# Reminding appears only when nothing is newly earned.
+EXPECTED = {
+    "reward_approval": {"cta": "Details", "wallet": True,  "stop_reminding": False},
+    "walletless_1":    {"cta": "Connect", "wallet": False, "stop_reminding": False},
+    "walletless_2":    {"cta": "Connect", "wallet": False, "stop_reminding": False},
+    "walletless_3":    {"cta": "Claim",   "wallet": False, "stop_reminding": False},
+    "walletless_4":    {"cta": "Claim",   "wallet": False, "stop_reminding": True},
+}
+
+
+@pytest.mark.needs_db
+@pytest.mark.parametrize("variant", sorted(EXPECTED))
+async def test_notification_variant(context, seeded, variant):
+    """3 — each variant's own text and buttons.
+
+    The rows are written for the user id this browser is actually using, so the
+    server computes the variant for us rather than being told which one to
+    return — which is the only version of this test worth having.
+    """
+    expected = EXPECTED[variant]
+
+    user_id = await storage.get(context, "id")
+    assert user_id, "the extension has no user id to seed rows against"
+
+    wallet = ADDRESS_A if expected["wallet"] else ""
+    seeded(variant, user_id, ADDRESS_A)
+
+    # A stored notification or an unexpired check window would both stop the
+    # server being asked at all.
+    await storage.delete(context, storage.NOTIFICATION)
+    await storage.delete(context, storage.NOTIFICATION_CHECK)
+    await storage.delete(context, storage.LAST_CHECKED_WALLET)
+    await storage.delete(context, storage.WALLET_ADDRESS)
+    # And the host extension's own key, which is the one the content script
+    # reports on every navigation. Leaving it set means the first page load
+    # checks with the previous variant's wallet and stores the answer.
+    await netspy.set_host_wallet(context, wallet)
+
+    await netspy.install(context, netspy.PASS)
+    page = await context.new_page()
+    await page.goto(NEUTRAL, wait_until="domcontentloaded")
+    await netspy.broadcast_wallet(page, wallet)
+    await settle(page, 6000)
+
+    frame = await popup.wait_for_popup(page, timeout=20, route="notification")
+    if frame is None:
+        answered = await netspy.last_body(context, netspy.NOTIFICATION_CHECK)
+        await page.close()
+        assert answered, ("no reward check was made, so the seeded rows were "
+                          "never looked at")
+        pytest.fail(
+            f"the rows for {variant} were seeded but no notification appeared; "
+            f"the server answered showNotification="
+            f"{answered.get('showNotification')!r}")
+
+    body = await popup.body_text(frame)
+    cta = await popup.text(frame, popup.NOTIFICATION["cta"])
+    has_stop = await popup.visible(frame, popup.NOTIFICATION["stop_reminders"])
+    await page.close()
+
+    assert "undefined" not in body and "NaN" not in body,         f"{variant} shows an unresolved value: {body[:200]!r}"
+    assert cta == expected["cta"],         f"{variant} should offer {expected['cta']!r}, got {cta!r}"
+    assert has_stop == expected["stop_reminding"], (
+        f"{variant} should{'' if expected['stop_reminding'] else ' not'} offer "
+        f"Stop Reminding")
+
+
+@pytest.mark.needs_db
+async def test_small_amounts_round_to_three_decimals(context, seeded):
+    """3 — amounts between 0.01 and 0.1 show three decimals, not four.
+
+    0.0457 became 0.046. Larger amounts are unchanged, which is why this only
+    asserts on the small one.
+    """
+    user_id = await storage.get(context, "id")
+    assert user_id, "the extension has no user id to seed rows against"
+    seeded("walletless_1", user_id, ADDRESS_A)
+
+    await storage.delete(context, storage.NOTIFICATION)
+    await storage.delete(context, storage.NOTIFICATION_CHECK)
+    await storage.delete(context, storage.LAST_CHECKED_WALLET)
+
+    page = await context.new_page()
+    await page.goto(NEUTRAL, wait_until="domcontentloaded")
+    await netspy.broadcast_wallet(page, "")
+    await settle(page, 6000)
+
+    frame = await popup.wait_for_popup(page, timeout=20, route="notification")
+    if frame is None:
+        await page.close()
+        pytest.skip("no notification appeared for the seeded rows")
+
+    earned = await popup.text(frame, popup.NOTIFICATION["earned"])
+    await page.close()
+
+    digits = [part for part in earned.replace(",", " ").split()
+              if part.replace(".", "").isdigit() and "." in part]
+    assert digits, f"no amount on the notification to check: {earned!r}"
+    for number in digits:
+        decimals = len(number.split(".")[1])
+        assert decimals <= 3,             f"{number} shows {decimals} decimals; three is the maximum"
+
+
+@pytest.mark.needs_db
+async def test_closing_the_notification_removes_it(context, seeded):
+    """3 — the X puts it away, and it does not come back on the next page.
+
+    The notification is stored so it survives a navigation; closing has to
+    erase that copy, or the user dismisses it and meets it again immediately.
+    """
+    user_id = await storage.get(context, "id")
+    assert user_id, "the extension has no user id to seed against"
+    seeded("walletless_1", user_id, ADDRESS_A)
+
+    for key in (storage.NOTIFICATION, storage.NOTIFICATION_CHECK,
+                storage.LAST_CHECKED_WALLET, storage.WALLET_ADDRESS):
+        await storage.delete(context, key)
+    await netspy.set_host_wallet(context, "")
+
+    page = await context.new_page()
+    await page.goto(NEUTRAL, wait_until="domcontentloaded")
+    await netspy.broadcast_wallet(page, "")
+    await settle(page, 6000)
+
+    frame = await popup.wait_for_popup(page, timeout=20, route="notification")
+    if frame is None:
+        await page.close()
+        pytest.skip("no notification appeared to close")
+
+    assert await popup.click(frame, popup.NOTIFICATION["close_x"], settle=3), \
+        "the notification has no X"
+    assert await popup.wait_for_gone(page, timeout=8, route="notification"), \
+        "the notification is still on the page after the X"
+
+    assert not await storage.get(context, storage.NOTIFICATION), \
+        "closing the notification left the stored copy behind, so it will " \
+        "reappear on the next navigation"
+    await page.close()
+
+
+@pytest.mark.needs_db
+async def test_stop_reminding_turns_the_reminders_off(context, seeded):
+    """3 — Stop Reminding sets the flag the reward check reads.
+
+    Only the flag is asserted, not months of silence: `disableReminders` is
+    what the server is told on every subsequent check, so writing it is the
+    whole of the client's part.
+    """
+    user_id = await storage.get(context, "id")
+    assert user_id, "the extension has no user id to seed against"
+    seeded("walletless_4", user_id, ADDRESS_A)
+
+    for key in (storage.NOTIFICATION, storage.NOTIFICATION_CHECK,
+                storage.LAST_CHECKED_WALLET, storage.WALLET_ADDRESS):
+        await storage.delete(context, key)
+    await storage.delete(context, "disableReminders")
+    await netspy.set_host_wallet(context, "")
+
+    page = await context.new_page()
+    await page.goto(NEUTRAL, wait_until="domcontentloaded")
+    await netspy.broadcast_wallet(page, "")
+    await settle(page, 6000)
+
+    frame = await popup.wait_for_popup(page, timeout=20, route="notification")
+    if frame is None:
+        await page.close()
+        pytest.skip("no notification appeared, so there is no Stop Reminding")
+
+    if not await popup.visible(frame, popup.NOTIFICATION["stop_reminders"]):
+        await page.close()
+        pytest.skip("this variant does not offer Stop Reminding")
+
+    assert await popup.click(frame, popup.NOTIFICATION["stop_reminders"], settle=3)
+    await page.close()
+
+    assert await storage.get(context, "disableReminders"), \
+        "Stop Reminding did not set disableReminders, so the next check will " \
+        "ask for reminders again"

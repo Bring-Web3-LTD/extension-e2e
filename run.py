@@ -5,13 +5,14 @@
     python run.py -k notification       one area
     python run.py -m popup              one marker
     python run.py --headless -n 4       how CI runs it
-    python run.py --keep-env            leave the environment up afterwards
+    python run.py --skip-env            the environment is already up
 
 The environment is brought up here rather than inside pytest on purpose: under
 `-n` every worker is a separate process, and a session fixture would have each
 of them deploy, then find the others' half-built stack.
 """
 import argparse
+import asyncio
 import os
 import subprocess
 import sys
@@ -22,6 +23,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from bring import config as cfg              # noqa: E402
+from bring import preflight                  # noqa: E402
 from bring.env import Environment, EnvError, find_manifest_dir   # noqa: E402
 
 JUNIT = ROOT / "junit.xml"
@@ -44,6 +46,8 @@ def parse_args():
                    help="skip the S3 download and use the one already unpacked")
     p.add_argument("--skip-env", action="store_true",
                    help="assume the environment is up; do not talk to AWS")
+    p.add_argument("--skip-preflight", action="store_true",
+                   help="do not check the retailers are live before running")
     p.add_argument("rest", nargs=argparse.REMAINDER,
                    help="anything else is passed to pytest")
     return p.parse_args()
@@ -129,9 +133,26 @@ def main() -> int:
     print(f"\nExtension: {extension}")
     print(f"API:       {cfg.env_api_url(args.env)}\n")
 
+    if not args.skip_preflight:
+        # A retailer that has left this environment's list makes every popup
+        # test fail with "no popup" — correct behaviour reported as a bug, and
+        # twenty minutes spent to get there. Ask first.
+        print(f"Checking the retailers are live on '{args.env}':")
+        try:
+            results = asyncio.run(preflight.verify(
+                extension, headless=bool(args.headless)))
+            preflight.report(results)
+        except preflight.TargetError as e:
+            print(f"\nCannot test: {e}", file=sys.stderr)
+            return 2        # the run was asked for something impossible
+        print()
+
     command = [sys.executable, "-m", "pytest", f"--junitxml={JUNIT}"]
     if args.workers and args.workers != "0":
         if _has_xdist():
+            # Plain `load`, not `loadgroup`: retailers are meant to mix within a
+            # worker so its browser holds one `quietDomains` list covering
+            # several shops, which is the situation a real user is in.
             command += ["-n", args.workers]
         else:
             # Serial still answers the question, just slower. Failing here

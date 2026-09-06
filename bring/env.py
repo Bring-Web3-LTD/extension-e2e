@@ -132,9 +132,22 @@ class Environment:
         # The task exits before CloudFormation finishes. Testing at that point
         # means testing against half-replaced lambdas.
         self.wait_for_stack()
-        # And a finished stack still has its per-country domain caches to build.
-        # An extension pointed at it now matches no retailer, and every test
-        # reports "no popup" for a product that is fine.
+
+        # A finished stack is still not a usable environment: the domain caches
+        # are built afterwards, and they are built **per country and per SDK
+        # version**. That is why this waits the full settle time instead of
+        # polling until the endpoint answers — an answer proves that *some*
+        # combination is ready, not that the one this run will ask for is. A
+        # run that started on the strength of a first successful probe gets
+        # "no popup" on every retailer and reports a healthy product as broken.
+        #
+        # Only a freshly created environment pays it; joining one that is
+        # already up goes straight through.
+        print(f"   environment created - settling for {cfg.SETTLE_SECONDS}s while "
+              f"it builds its domain caches")
+        time.sleep(cfg.SETTLE_SECONDS)
+
+        # And then confirm, rather than assume the wait was enough.
         self.wait_until_serving(budget=cfg.READY_BUDGET)
 
     def _start_task(self, key: str) -> str:

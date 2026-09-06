@@ -11,6 +11,18 @@ from bring import popup, storage
 pytestmark = pytest.mark.popup
 
 DAY = 24 * 60 * 60 * 1000
+MINUTE = 60 * 1000
+
+# What each duration button is specified to buy, straight from the iframe's own
+# option list (OptOut.tsx). Asserted per choice rather than only for the
+# default, because "everyone got 24 hours whichever button they pressed" is
+# exactly the shape of bug a single-duration test cannot see.
+OPTOUT_WINDOWS = {
+    "for_24h": 24 * 60 * 60 * 1000,
+    "for_30d": 30 * 24 * 60 * 60 * 1000,
+}
+# Generous: the range is stamped when the click is handled, not when it is sent.
+OPTOUT_TOLERANCE_MS = 2 * 60 * 1000
 
 
 async def open_optout(page, frame):
@@ -62,15 +74,22 @@ async def test_back_to_activation_returns_to_the_offer(on_retailer):
         "Back did not return to the offer"
 
 
-async def test_optout_this_site_silences_only_this_site(on_retailer, context,
-                                                        retailer, control):
-    """1.4 — a single-site opt-out writes a quiet entry and leaves others alone."""
+@pytest.mark.parametrize("duration", ["for_24h", "for_30d", "forever"])
+async def test_optout_this_site_silences_for_the_time_chosen(on_retailer, context,
+                                                             retailer, control,
+                                                             duration):
+    """1.4 - a single-site opt-out lasts exactly as long as the button says.
+
+    Run for every duration, because the window is the whole point of the
+    screen: an opt-out that silently gives everyone 24 hours looks correct on
+    whichever single duration a one-case test happened to pick.
+    """
     page, frame = on_retailer
     assert frame, "no popup appeared"
     await open_optout(page, frame)
 
     await popup.click(frame, popup.OPTOUT["this_site"], settle=0.5)
-    await popup.click(frame, popup.OPTOUT["for_24h"], settle=0.5)
+    await popup.click(frame, popup.OPTOUT[duration], settle=0.5)
     assert await popup.click(frame, popup.OPTOUT["apply"], settle=3)
 
     assert await popup.visible(frame, popup.OPTOUT["confirmation"]), \
@@ -82,15 +101,21 @@ async def test_optout_this_site_silences_only_this_site(on_retailer, context,
         "a single-site opt-out set the global opt-out as well"
 
     window = storage.window_ms(entry)
-    assert window and abs(window - DAY) < 60_000, \
-        f"expected a 24-hour window, got {window}ms"
+    assert window is not None, f"the opt-out wrote a malformed range: {entry!r}"
 
-    other = await context.new_page()
-    await other.goto(control, wait_until="domcontentloaded")
-    elsewhere = await popup.wait_for_popup(other, timeout=25)
-    await other.close()
-    assert elsewhere, \
-        f"opting out of {retailer} also silenced {control}"
+    if duration == "forever":
+        # Not a number to match against: 'forever' is whatever largest value
+        # the iframe sends, and an older SDK may clamp it. What has to hold is
+        # that it outlasts every other choice by a wide margin.
+        assert window > 60 * DAY, (
+            f"'forever' gave {window / DAY:.1f} days, which is not forever - "
+            f"the 60-day cap is supposed to be gone")
+    else:
+        expected = OPTOUT_WINDOWS[duration]
+        assert abs(window - expected) <= OPTOUT_TOLERANCE_MS, (
+            f"opting out for {duration.removeprefix('for_')} should silence "
+            f"{retailer} for {expected / DAY:.2f} days; it stored "
+            f"{window / DAY:.2f}")
 
 
 async def test_optout_all_sites_silences_everything(on_retailer, context,

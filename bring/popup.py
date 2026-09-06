@@ -70,7 +70,12 @@ OFFERBAR = {
 NOTIFICATION = {
     "simple": "#notification-container-simple",
     "pairing": "#notification-container-pairing",
-    "cta": "#notification-cta-btn",
+    # Two containers, two buttons, same job. `promptPairing` decides which is
+    # rendered (Notification.tsx), so anything asking "what does the button
+    # say" has to accept either — looking only for the pairing one reads an
+    # empty string on every wallet-connected notification.
+    "cta": "#notification-cta-btn, #notification-details-btn",
+    "cta_pairing": "#notification-cta-btn",
     "details": "#notification-details-btn",
     "stop_reminders": "#notification-stop-reminders-btn",
     "earned": "#notification-earned",
@@ -102,6 +107,22 @@ OPTOUT_WINDOWS_MS = {
     "for_30d": 30 * 24 * 60 * 60 * 1000,
     "forever": 999_999_999_999_999,
 }
+
+# Any one of these means the app has finished mounting something a test can
+# act on. Kept as one selector list rather than a per-surface check because
+# "has it rendered" is asked before anyone knows which surface arrived.
+SURFACE_MARKERS = ", ".join((
+    "#offer-container",              # the offer
+    "#bring-widget-collapsed",       # the widget badge
+    "#bring-widget-expanded",
+    "#activated-container",          # the confirmation
+    "#offerbar-container",           # the bar
+    "#opt-out-container",
+    "#notification-container-simple",
+    "#notification-container-pairing",
+    "#onestep-activate-btn",         # the Argent one-step variant
+    "#activate-btn",
+))
 
 # Which router path each surface is served on.
 ROUTES = {
@@ -145,13 +166,61 @@ async def rendered(frame) -> bool:
     A frame exists from the moment the iframe is appended, well before the
     bundle has loaded and verified its token. Treating existence as appearance
     makes a broken popup look present and a slow one look instant.
+
+    Drawn means "one of the app's own surfaces has mounted". Not text: the
+    widget's badge is an icon with none, and `innerText` is layout-dependent so
+    it reads empty in the 1x1 iframe the content script injects before the app
+    asks to be resized. And not merely "body has children" either — the React
+    root div exists from the first byte of HTML, so that returns true while the
+    frame is still blank, and callers then look for buttons that have not been
+    rendered yet.
     """
     try:
         return await frame.evaluate(
-            "() => !!document.body && document.body.innerText.trim().length > 0"
-        )
+            "(sel) => !!document.querySelector(sel)", SURFACE_MARKERS)
     except Exception:
         return False
+
+
+async def is_widget(frame) -> bool:
+    """Whether this frame is showing the collapsed widget badge.
+
+    Server-gated (`isWidgetEnabled`), so the same retailer is a full popup on
+    one environment and a badge on another. Anything that wants the offer has
+    to ask, rather than assume.
+    """
+    return await visible(frame, WIDGET["collapsed"])
+
+
+async def expand_widget(frame, *, timeout: float = 15) -> bool:
+    """Click the badge and wait for the offer behind it.
+
+    Returns False when there was no badge to click — which is not a failure,
+    only the other of the two shapes the server can send.
+
+    The click is retried: the badge zooms out while the offer scales up in its
+    place, and a click that lands during that hand-off can be swallowed. One
+    retry costs a second and removes a flake that would otherwise show up as
+    "the offer has no activate button" on a perfectly good popup.
+    """
+    if not await is_widget(frame):
+        return False
+
+    deadline = asyncio.get_event_loop().time() + timeout
+    attempts = 0
+    while asyncio.get_event_loop().time() < deadline:
+        if await visible(frame, OFFER["activate"]):
+            return True
+        if not await is_widget(frame):
+            # Mid-animation: the badge has gone but the offer has not mounted.
+            await asyncio.sleep(0.3)
+            continue
+        if attempts < 3:
+            attempts += 1
+            await click(frame, WIDGET["badge"], settle=1.0, force=True)
+        await asyncio.sleep(0.4)
+
+    return await visible(frame, OFFER["activate"])
 
 
 async def wait_for_popup(page, timeout: float = 30, route: str = None):
@@ -168,6 +237,45 @@ async def wait_for_popup(page, timeout: float = 30, route: str = None):
                 return frame
         await asyncio.sleep(0.25)
     return None
+
+
+async def wait_for_offer(page, timeout: float = 30):
+    """The offer itself, expanding the widget badge first when there is one.
+
+    Most of the suite is about what the offer does — activate, close, opt-out,
+    terms — and none of that is reachable while the widget is collapsed. So the
+    badge is opened here rather than in thirty tests, and a run against an
+    environment with the widget off behaves identically.
+    """
+    frame = await wait_for_popup(page, timeout=timeout)
+    if frame is None:
+        return None
+    if await is_widget(frame):
+        await expand_widget(frame)
+    return frame
+
+
+async def wait_for_confirmation(page, timeout: float = 60):
+    """The activated confirmation, after the redirect that activation triggers.
+
+    Activating does not leave the tab where it was. The SDK sends it through
+    the affiliate network — measured: `redirect.viglink.com/?...&u=<retailer>`
+    — which then bounces back to the shop, and the confirmation is injected on
+    what lands. A test that starts looking the moment the button is clicked is
+    watching a tab that is busy navigating, and thirty seconds is not always
+    enough for the hop.
+
+    So the navigation is allowed to settle first, and the wait afterwards is
+    generous. The activation itself is already provable from `quietDomains`;
+    this is only about catching the screen it produces.
+    """
+    for state in ("domcontentloaded", "load"):
+        try:
+            await page.wait_for_load_state(state, timeout=20_000)
+        except Exception:
+            break        # still navigating, or already past it; the poll copes
+
+    return await wait_for_popup(page, timeout=timeout, route="activated")
 
 
 async def wait_for_gone(page, timeout: float = 10, route: str = None) -> bool:
@@ -191,12 +299,27 @@ async def iframe_src(page) -> str:
     return await element.get_attribute("src") if element else ""
 
 
-async def click(frame, selector: str, *, settle: float = 1.5) -> bool:
-    """Click something inside the frame; False when it is not there to click."""
+async def click(frame, selector: str, *, settle: float = 1.5,
+                force: bool = False) -> bool:
+    """Click something inside the frame; False when it is not there to click.
+
+    :param force: skip Playwright's stability check. Needed for anything that
+        animates continuously — the widget badge pulses by design, so the
+        default check waits for it to stop moving and it never does. Visibility
+        is still asserted above, so this does not click a hidden element; it
+        only stops waiting for a permanent animation to end.
+    """
     element = await frame.query_selector(selector)
     if not element or not await element.is_visible():
         return False
-    await element.click()
+    try:
+        await element.click(force=force, timeout=8000)
+    except Exception:
+        if force:
+            raise
+        # A pulsing or sliding element that never settles: say so by retrying
+        # once with the check off rather than reporting "no such button".
+        await element.click(force=True, timeout=8000)
     await asyncio.sleep(settle)
     return True
 

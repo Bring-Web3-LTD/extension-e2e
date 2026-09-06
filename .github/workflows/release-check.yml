@@ -1,0 +1,174 @@
+# The button you press before publishing.
+#
+#   GitHub -> Actions -> "Release check" -> Run workflow
+#
+# Brings up a temporary environment from the branches you name, loads the
+# extension that environment built, and runs everything against it. Nothing
+# here runs on its own: no push trigger, no schedule. It is a decision, and
+# somebody makes it.
+#
+# About half an hour. You do not have to watch it — the summary at the top of
+# the run says PASS or exactly what broke, and the screenshots, traces and
+# storage dumps for every failure are attached to the run.
+
+name: Release check
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend_branch:
+        description: 'bringweb3 branch to deploy'
+        required: true
+        default: 'main'
+      frontend_branch:
+        description: 'chromeExtension branch to deploy'
+        required: true
+        default: 'main'
+      environment_name:
+        description: 'Temporary environment to use or create'
+        required: true
+        default: 'qa-extension'
+      retailers:
+        description: 'Shops to test, comma separated (blank = the default four)'
+        required: false
+        default: ''
+      scope:
+        description: 'How much to run'
+        required: true
+        default: 'everything'
+        type: choice
+        options:
+          - everything
+          - popup and widget only
+          - the walk only
+
+permissions:
+  id-token: write        # OIDC to AWS
+  contents: read
+
+jobs:
+  check:
+    name: Everything, against a fresh environment
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+
+    env:
+      BRING_ENV_NAME: ${{ github.event.inputs.environment_name }}
+      BRING_BACKEND_BRANCH: ${{ github.event.inputs.backend_branch }}
+      BRING_FRONTEND_BRANCH: ${{ github.event.inputs.frontend_branch }}
+      BRING_RETAILERS: ${{ github.event.inputs.retailers }}
+      BRING_HEADLESS: '1'
+      ECKO_API_KEY: ${{ secrets.ECKO_API_KEY }}
+      AWS_REGION: eu-central-1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: eu-central-1
+          role-session-name: extension-e2e
+
+      # Only needed to seed the notification variants. Without it those five
+      # tests skip with a reason and everything else runs, so it is optional
+      # rather than a hard requirement.
+      - name: Database tunnel key
+        if: ${{ secrets.DB_SSH_KEY != '' }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s' "${{ secrets.DB_SSH_KEY }}" > ~/.ssh/bring-db.pem
+          chmod 600 ~/.ssh/bring-db.pem
+          {
+            echo "DB_SSH_HOST=${{ secrets.DB_SSH_HOST }}"
+            echo "DB_SSH_USER=${{ secrets.DB_SSH_USER }}"
+            echo "DB_SSH_PORT=22"
+            echo "DB_SSH_KEY_PATH=$HOME/.ssh/bring-db.pem"
+          } >> "$GITHUB_ENV"
+
+      # The environment is brought up once, here, and reused by both runs
+      # below. Deploying it twice would mean waiting out the domain caches
+      # twice for no gain.
+      - name: The suite
+        id: suite
+        if: ${{ github.event.inputs.scope != 'the walk only' }}
+        continue-on-error: true
+        run: |
+          if [ "${{ github.event.inputs.scope }}" = "popup and widget only" ]; then
+            python -u run.py --headless -n 4 -m "popup or widget" | tee suite.log
+          else
+            python -u run.py --headless -n 4 | tee suite.log
+          fi
+
+      - name: The walk — every shop in step, in one browser
+        id: walk
+        if: ${{ github.event.inputs.scope != 'popup and widget only' }}
+        continue-on-error: true
+        run: python -u flow.py --headless | tee walk.log
+
+      - name: What happened
+        if: always()
+        run: |
+          {
+            echo "## Release check"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| environment | \`${BRING_ENV_NAME}\` |"
+            echo "| bringweb3 | \`${BRING_BACKEND_BRANCH}\` |"
+            echo "| chromeExtension | \`${BRING_FRONTEND_BRANCH}\` |"
+            echo
+
+            if [ -f suite.log ]; then
+              echo "### The suite"
+              echo '```'
+              # The verdict block run.py prints at the end.
+              sed -n '/^=\{20,\}$/,$p' suite.log | tail -40
+              echo '```'
+            fi
+
+            if [ -f walk.log ]; then
+              echo "### The walk"
+              echo '```'
+              grep -E '^\[(ok |FAIL)\]|^   (ok|X) |^-- |^(PASS|FAIL) ' walk.log | tail -80
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failures
+          path: |
+            artifacts/
+            suite.log
+            walk.log
+            junit.xml
+          retention-days: 30
+          if-no-files-found: ignore
+
+      # Both runs above are `continue-on-error` so that one failing does not
+      # hide the other's results. The verdict is made here, once, on both.
+      - name: Verdict
+        if: always()
+        run: |
+          suite='${{ steps.suite.outcome }}'
+          walk='${{ steps.walk.outcome }}'
+          echo "suite: $suite    walk: $walk"
+          if [ "$suite" = "failure" ] || [ "$walk" = "failure" ]; then
+            echo "::error::Something the extension does is not what it should be. See the summary."
+            exit 1
+          fi
+          echo "Safe to publish as far as this check can tell."

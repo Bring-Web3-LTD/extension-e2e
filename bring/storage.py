@@ -80,29 +80,70 @@ async def dump(context) -> dict:
     return {k[len(PREFIX):]: v for k, v in raw.items() if k.startswith(PREFIX)}
 
 
-async def settled(context, timeout: float = 15) -> bool:
-    """Wait until the extension has finished writing its own first-run state.
+#: Not a retailer, so visiting it cannot silence anything or affect a test.
+WARMUP_URL = "https://example.com/"
 
-    On a fresh profile the SDK runs its data migration on startup, and that
-    migration *writes* `quietDomains`. A test that seeds storage the instant the
-    worker wakes has its rows overwritten a moment later, and then fails on a
-    state nobody put there — which is exactly what happened while building this,
-    and reads as a random flake because the race is decided by milliseconds.
 
-    `migrationVersion` reaching its current value is the marker: the last thing
-    the migration does is write it.
+async def settled(context, timeout: float = 45) -> bool:
+    """Wait until the extension is actually ready to be tested.
+
+    Two things have to have happened, and both bite on a fresh profile.
+
+    The migration has to have finished. It *writes* `quietDomains`, so a test
+    that seeds storage the instant the worker wakes has its rows overwritten a
+    moment later and fails on a state nobody put there — a race decided by
+    milliseconds, which shows up as a random flake.
+
+    And the retailer list has to be there. The SDK downloads it lazily, on the
+    first navigation that asks for it, so the very first retailer a fresh
+    profile visits is matched against nothing and no popup check is ever sent.
+    That is not subtle in its effects: it reported all five shops as "never
+    matched the retailer list", including one we had already watched work.
+    A neutral page pays for the download without touching a retailer.
     """
     import asyncio
 
     deadline = asyncio.get_event_loop().time() + timeout
+    warmed = False
+
     while asyncio.get_event_loop().time() < deadline:
         try:
             if await get(context, "migrationVersion"):
-                return True
+                entries = await get(context, "relevantDomains")
+                if entries:
+                    return True
+                if not warmed:
+                    warmed = True
+                    page = await context.new_page()
+                    try:
+                        await page.goto(WARMUP_URL, wait_until="domcontentloaded",
+                                        timeout=20_000)
+                    except Exception:
+                        pass        # even a failed navigation runs the content script
+                    finally:
+                        await page.close()
         except Exception:
             pass
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.5)
+
     return False
+
+
+async def forget(context, url: str) -> bool:
+    """Drop just this retailer's rows, leaving everyone else's alone.
+
+    Deleting the whole list is the blunt version, and it is wrong in the middle
+    of a test: the extension writes quietDomains from its own navigations —
+    a control tab loading, a follow-up firing — and a wholesale delete throws
+    those away too. Between tests the difference does not matter; inside one it
+    is the difference between a clean slate and a lost write.
+    """
+    rows = await quiet_domains(context)
+    keep = [r for r in rows if not (isinstance(r, dict) and entries_for([r], url))]
+    if len(keep) == len(rows):
+        return False
+    await set(context, QUIET_DOMAINS, keep)
+    return True
 
 
 async def reset(context) -> None:
@@ -112,6 +153,10 @@ async def reset(context) -> None:
     the same retailer would find no popup — which is correct behaviour and
     still a useless test. Clearing the two keys that hold it is the same reset
     as throwing the profile away, without the browser restart.
+
+    Safe to do wholesale *between* tests, which is the only place it is called:
+    nothing is navigating then, and the next test wants a clean slate anyway.
+    Inside a test, use `forget` — see the note there.
     """
     for key in (QUIET_DOMAINS, OPT_OUT):
         await delete(context, key)

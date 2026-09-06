@@ -6,16 +6,19 @@ import time
 
 import pytest
 
-from bring import popup, storage
+from bring import netspy, popup, storage
 
 pytestmark = pytest.mark.popup
 
 MINUTE = 60_000
-# The server sets the window; 30 minutes is what it has been sending. Asserted
-# as a range rather than a number, so a server that tunes it does not turn into
-# a failing suite — but a window of seconds or of days still fails.
-CLOSE_QUIET_MIN = 5 * MINUTE
-CLOSE_QUIET_MAX = 24 * 60 * MINUTE
+
+# What closing the popup is supposed to buy: half an hour of quiet. Asserted as
+# the number, not as a range, because "some plausible window" is what a client
+# storing an invented value would also satisfy. The tolerance covers the
+# round-trip between the server stamping the range and the client storing it,
+# nothing more.
+CLOSE_QUIET_MS = 30 * MINUTE
+QUIET_TOLERANCE_MS = 2 * MINUTE
 
 
 async def test_popup_appears(on_retailer, retailer):
@@ -92,9 +95,26 @@ async def test_close_silences_this_retailer_only(on_retailer, context, retailer,
     assert entry.get("phase") == "quiet", \
         f"expected phase 'quiet' after a close, got {entry.get('phase')!r}"
 
+    # Two things have to be true, and they fail for different reasons. The
+    # window must be the half hour a close is specified to buy — a wrong
+    # number here is a product bug. And it must equal what the server sent on
+    # this very check — a mismatch there means the client mangled a value it
+    # was given, which the first assertion alone would miss whenever the
+    # server happens to send the expected number anyway.
     window = storage.window_ms(entry)
-    assert window and CLOSE_QUIET_MIN <= window <= CLOSE_QUIET_MAX, \
-        f"the close silenced {retailer} for {window}ms, which is not a sane window"
+    assert window is not None, f"the close wrote a malformed range: {entry!r}"
+
+    served = await netspy.server_quiet_ms(context)
+    assert abs(window - CLOSE_QUIET_MS) <= QUIET_TOLERANCE_MS, (
+        f"closing should silence {retailer} for "
+        f"{CLOSE_QUIET_MS / MINUTE:.0f} minutes; it stored "
+        f"{window / MINUTE:.1f}"
+        + (f" (the server sent {served / MINUTE:.1f} minutes)" if served else ""))
+
+    if served:
+        assert abs(window - served) < 2000, (
+            f"the server sent {served / MINUTE:.1f} minutes but the extension "
+            f"stored {window / MINUTE:.1f}")
 
     # Back on the retailer: still silent.
     again = await context.new_page()
@@ -199,3 +219,33 @@ async def test_only_one_popup_at_a_time(on_retailer):
     found = popup.frames(page)
     assert len(found) == 1, \
         f"{len(found)} Bring frames on the page — the popup was injected more than once"
+
+
+@pytest.mark.parametrize("mode", ["reload", "back", "forward"])
+async def test_navigation_re_pops_when_the_retailer_is_still_eligible(
+        context, retailer, control, mode):
+    """1.6 — the other half: back, forward and refresh re-check the page.
+
+    Its sibling above proves they do not resurrect a popup that was silenced.
+    This proves they still work at all — without it, an extension that stopped
+    reacting to navigation entirely would pass that one and look correct.
+    """
+    page = await context.new_page()
+    await page.goto(retailer, wait_until="domcontentloaded")
+    assert await popup.wait_for_offer(page, timeout=30), \
+        f"no popup on the first visit to {retailer}"
+
+    if mode == "reload":
+        await page.reload(wait_until="domcontentloaded")
+    else:
+        await page.goto(control, wait_until="domcontentloaded")
+        await page.go_back(wait_until="domcontentloaded")
+        if mode == "forward":
+            await page.go_forward(wait_until="domcontentloaded")
+            await page.go_back(wait_until="domcontentloaded")
+
+    again = await popup.wait_for_popup(page, timeout=30)
+    await page.close()
+    assert again, (
+        f"after {mode} the popup did not come back on {retailer}, which was "
+        f"never silenced — the navigation was not re-checked")

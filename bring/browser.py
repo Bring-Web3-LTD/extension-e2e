@@ -24,17 +24,58 @@ LAUNCH_ARGS = [
     # Chrome throttles and eventually kills MV3 workers in the background; a
     # test that waits for a reward check would otherwise be racing the browser.
     "--disable-features=DisableLoadExtensionCommandLineSwitch",
+    # Chromium announces itself as automated, and a search engine answers with
+    # a CAPTCHA instead of results. That is not a cosmetic problem here: the
+    # offer bar only exists over search results, so a browser that cannot get
+    # a results page cannot test the offer bar at all.
+    "--disable-blink-features=AutomationControlled",
+    "--disable-infobars",
 ]
+
+
+def chromium_major() -> str:
+    """The major version Playwright ships, so the user agent matches the binary.
+
+    A user agent claiming a version the browser is not is its own tell.
+    """
+    try:
+        import json
+        import playwright
+
+        data = json.loads(
+            (Path(playwright.__file__).parent / "driver" / "package"
+             / "browsers.json").read_text(encoding="utf-8"))
+        for browser in data.get("browsers", []):
+            if browser.get("name") == "chromium":
+                return str(browser.get("browserVersion", "130")).split(".")[0]
+    except Exception:
+        pass
+    return "130"
+
+
+def real_user_agent() -> str:
+    """A user agent without the two words that give the game away.
+
+    Playwright's default contains `HeadlessChrome` even when headed, and
+    `--enable-automation` sets `navigator.webdriver`. Either one is enough for
+    a search engine to serve a bot check.
+    """
+    return ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            f"(KHTML, like Gecko) Chrome/{chromium_major()}.0.0.0 Safari/537.36")
 
 
 @asynccontextmanager
 async def extension_browser(extension_dir: Path, profile_dir: Path, *,
-                            headless: bool = False, trace_to: Path = None):
+                            headless: bool = False, trace: bool = True):
     """Yield a BrowserContext with the extension installed.
 
     :param headless: uses Chrome's new headless, which is the only one that
         loads extensions at all. The old one silently ran without them, which
         looks exactly like a product that stopped injecting.
+    :param trace: arm tracing without writing anything. The browser outlives a
+        single test, so each test records its own chunk and keeps it only if it
+        failed — one trace for a whole lane would be too large to open and
+        would name sixty tests at once.
     """
     extension_dir = Path(extension_dir).resolve()
     profile_dir = Path(profile_dir).resolve()
@@ -54,19 +95,21 @@ async def extension_browser(extension_dir: Path, profile_dir: Path, *,
             args=args,
             viewport={"width": 1440, "height": 900},
             ignore_https_errors=True,
+            user_agent=real_user_agent(),
+            # Playwright adds this by default, and it is what sets
+            # navigator.webdriver.
+            ignore_default_args=["--enable-automation"],
         )
-        if trace_to:
-            await context.tracing.start(screenshots=True, snapshots=True, sources=True)
+        if trace:
+            try:
+                await context.tracing.start(screenshots=True, snapshots=True,
+                                            sources=True)
+            except Exception:
+                pass        # tracing is evidence, not a reason to fail a run
         try:
             await wake_worker(context)
             yield context
         finally:
-            if trace_to:
-                try:
-                    trace_to.parent.mkdir(parents=True, exist_ok=True)
-                    await context.tracing.stop(path=str(trace_to))
-                except Exception:
-                    pass
             await context.close()
 
 

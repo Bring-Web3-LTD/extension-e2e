@@ -24,14 +24,14 @@ LIST_KEYS = ("relevantDomains", "relevantDomainsCheck", "domainsTypes",
              "quietDomainsMaxLength", "standDownOffset", "redirectsWhitelist")
 
 
-async def test_first_run_writes_its_own_identity(context, retailer):
+async def test_first_run_writes_its_own_identity(fresh_context, retailer):
     """4 — a user id exists without a wallet, and popups start enabled."""
-    page = await context.new_page()
+    page = await fresh_context.new_page()
     await page.goto(retailer, wait_until="domcontentloaded")
     await popup.wait_for_popup(page, timeout=30)
     await page.close()
 
-    saved = await storage.dump(context)
+    saved = await storage.dump(fresh_context)
     for key in FIRST_RUN_KEYS:
         assert key in saved, f"bring_{key} was never written on a first run"
 
@@ -73,18 +73,18 @@ async def test_the_environment_is_the_one_under_test(context, env_name, retailer
         f"is talking to a different environment than it deployed")
 
 
-async def test_deprecated_keys_are_gone_after_the_upgrade(context, retailer):
+async def test_deprecated_keys_are_gone_after_the_upgrade(fresh_context, retailer):
     """4 — postPurchaseUrls and optOutDomains are no longer written.
 
     Both were superseded: the first by follow-up matchers, the second folded
     into quietDomains on upgrade. A fresh install must not recreate either.
     """
-    page = await context.new_page()
+    page = await fresh_context.new_page()
     await page.goto(retailer, wait_until="domcontentloaded")
     await popup.wait_for_popup(page, timeout=30)
     await page.close()
 
-    saved = await storage.dump(context)
+    saved = await storage.dump(fresh_context)
     for key in storage.DEPRECATED_KEYS:
         assert key not in saved, \
             f"bring_{key} is deprecated but was written on a fresh install"
@@ -124,8 +124,7 @@ async def test_a_malformed_quiet_entry_does_not_silence_everything(context, reta
         "a quietDomains row with a malformed time range silenced the retailer"
 
 
-async def test_quiet_domains_are_pruned_on_write_not_on_read(context, retailer,
-                                                             control):
+async def test_quiet_domains_are_pruned_on_write_not_on_read(context, retailer):
     """4 — expired rows survive a read and go on the next write.
 
     Stated as a test because it is the reason an expired opt-out is still in
@@ -156,31 +155,31 @@ async def test_quiet_domains_are_pruned_on_write_not_on_read(context, retailer,
         "an expired row survived a write into quietDomains"
 
 
-async def test_storage_self_test_ran(context, retailer):
+async def test_storage_self_test_ran(fresh_context, retailer):
     """4 — the extension checks its own storage on startup and keeps working."""
-    page = await context.new_page()
+    page = await fresh_context.new_page()
     await page.goto(retailer, wait_until="domcontentloaded")
     await popup.wait_for_popup(page, timeout=30)
     await page.close()
 
-    saved = await storage.dump(context)
+    saved = await storage.dump(fresh_context)
     assert "extensionMemoryTest" in saved, \
         "the startup storage self-test left no trace, so it did not run"
 
 
-async def test_every_expected_key_is_accounted_for(context, retailer):
+async def test_every_expected_key_is_accounted_for(fresh_context, retailer):
     """4 — a sweep, so a key that quietly disappears is noticed.
 
     Not every key exists on every run — a user with no wallet has no
     walletAddress, nobody has opted out yet — so this asserts that no
     *unexpected* key appeared and that the ones that must be there are.
     """
-    page = await context.new_page()
+    page = await fresh_context.new_page()
     await page.goto(retailer, wait_until="domcontentloaded")
     await popup.wait_for_popup(page, timeout=30)
     await page.close()
 
-    saved = await storage.dump(context)
+    saved = await storage.dump(fresh_context)
     unknown = sorted(set(saved) - set(storage.ALL_KEYS))
     assert not unknown, (
         f"the extension wrote keys this suite does not know about: {unknown}. "

@@ -35,7 +35,16 @@ FRONTEND_REPO = "Bring-Web3-LTD/chromeExtension"
 BACKEND_BRANCH = os.getenv("BRING_BACKEND_BRANCH", "main")
 FRONTEND_BRANCH = os.getenv("BRING_FRONTEND_BRANCH", "main")
 
-ENV_NAME = os.getenv("BRING_ENV_NAME", "qa-e2e")
+# The name is load-bearing in four places at once, so it is worth writing down
+# what it becomes:
+#     API base path   api.bringweb3.io/qa-extension/v1/extension
+#     stack           qa-extension-temp-stack
+#     database        qa_extension_temp        (hyphens become underscores)
+#     extension zip   s3://.../extensions/qa-extension/
+# Hyphens, not underscores: CloudFormation refuses an underscore in a stack
+# name ("must satisfy [a-zA-Z][-a-zA-Z0-9]*"), so `qa_extension` would fail
+# fifteen minutes into a deploy rather than at validation.
+ENV_NAME = os.getenv("BRING_ENV_NAME", "qa-extension")
 PLATFORM = os.getenv("BRING_PLATFORM", "ecko")
 
 # The environment destroys itself; a run that crashes must not leak a stack.
@@ -43,6 +52,13 @@ DESTROY_AFTER_HOURS = int(os.getenv("BRING_DESTROY_AFTER_HOURS", "8"))
 
 DEPLOY_TIMEOUT = 900          # the deployer task itself
 STACK_TIMEOUT = 1800          # CloudFormation finishes after the task exits
+# A fresh environment waits this out unconditionally before anything is
+# tested. The domain caches are built after the stack finishes, per country and
+# per SDK version, so no single probe can prove the combination this run needs
+# is among the ones that are ready yet.
+SETTLE_SECONDS = int(os.getenv("BRING_SETTLE_SECONDS", "240"))
+# And then it is confirmed: how long to keep asking for the retailer list
+# before giving up and running anyway.
 READY_BUDGET = int(os.getenv("BRING_READY_BUDGET", "240"))
 POLL_INTERVAL = 30
 READY_POLL_INTERVAL = 5

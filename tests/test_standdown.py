@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from bring import pages, popup, retailers, storage
+from bring import netspy, pages, popup, retailers, storage
 
 pytestmark = pytest.mark.popup
 
@@ -117,6 +117,23 @@ async def test_stand_down_quiets_the_whole_domain(context, retailer):
         f"a stand-down should quiet `*.<domain>`, got {entry.get('domain')!r}"
     assert str(entry.get("type", "")).startswith("kdi"), \
         f"a stand-down entry should be type 'kdi', got {entry.get('type')!r}"
+
+    # The window is `now + standDownOffset`, and the offset is downloaded with
+    # the retailer list — so it can be read back and compared exactly, with no
+    # number written here to go stale when the server raises it again. It was
+    # raised from one hour to two once already.
+    window = storage.window_ms(entry)
+    assert window is not None, f"the stand-down wrote a malformed range: {entry!r}"
+    offset = await storage.get(context, "standDownOffset")
+    if isinstance(offset, (int, float)) and offset > 0:
+        assert abs(window - offset) < 2000, (
+            f"standDownOffset is {offset / HOUR:.2f}h but the stand-down "
+            f"silenced {retailer} for {window / HOUR:.2f}h")
+    else:
+        # No offset downloaded: the SDK falls back to its own default of 2h.
+        assert 0.5 <= window / HOUR <= 24, (
+            f"no standDownOffset was stored and the stand-down window is "
+            f"{window / HOUR:.2f}h, which is not the 2h default either")
 
     # A different path on the same retailer is covered by the same entry.
     other = await context.new_page()

@@ -65,15 +65,38 @@ the CI role). The suite needs ECS, CloudFormation and S3 read access.
 ## Running it
 
 ```bash
-python run.py                       # everything
+python run.py                       # everything, one worker per retailer
 python run.py -m popup              # one area, by marker
 python run.py -k standdown          # one file
-python run.py --headless -n 6       # how CI runs it
+python run.py --headless -n 4       # how CI runs it
 python run.py --skip-env            # environment is already up, do not ask AWS
 python run.py --reuse-extension     # and do not re-download it either
+python run.py --skip-preflight      # do not check the retailers first
 ```
 
 Markers: `popup`, `notification`, `storage`, `robustness`, `needs_db`.
+
+### One profile per lane, not per test
+
+Each worker opens **one** Chrome and keeps it for its whole retailer. Same
+Chrome binary, separate processes, one profile each.
+
+The profile is deliberately *not* thrown away between tests. A real user has
+one profile that accumulates — an id, a downloaded retailer list, a warm cache,
+a migration that ran once. Recreating it per test would mean testing "the very
+first run, ever" hundreds of times and the ordinary case never, and first-run
+is the one state a real user is almost never in.
+
+What is cleared between tests is only what the last test wrote: `quietDomains`
+and the global opt-out. Those genuinely poison the next test — a close silences
+the retailer for thirty minutes, and the next test would report a missing popup
+for a product behaving exactly as designed. It is the same reset the larger QA
+framework performs between its checks.
+
+The handful of tests that really are about a first install ask for
+`fresh_context` and get a virgin profile. `tests/test_harness.py` checks both
+halves of this hold, because when the reset silently stops running, dozens of
+tests fail with messages that blame the product.
 
 ### The environment
 
@@ -128,6 +151,7 @@ bring/
   pages.py          controlled markup served on a real retailer's URL
   netspy.py         count and steer the extension's own fetches
   retailers.py      which shops to test against
+  preflight.py      are those shops still retailers on this environment
 tests/              one file per QA plan area
 ```
 
@@ -157,16 +181,44 @@ page, and an error body with no `nextCall`.
 
 ---
 
-## Retailers
+## Retailers, and how the run is spread
 
-Two by default (`bring/retailers.py`), and two is the minimum: close, activate
-and opt-out all have to prove the silence they wrote applies here and *not* to
-another shop. With one site, half of every scope assertion quietly does not run.
+**The retailer is the unit of parallelism.** Every test runs once per retailer
+in `bring/retailers.py`, and `--dist loadgroup` keeps one shop's tests on one
+worker — so with four shops and `-n 4`, each worker owns a shop and works
+through it in its own browser. One browser at a time per shop matters: four
+workers hammering the same site is the quickest way to earn a bot check, and a
+bot check looks exactly like a missing popup.
 
-A retailer is only a valid target while it is live in the country the browser
-is in — a shop with no local offer correctly returns no popup, and reads as a
-product failure if the list has gone stale. Override without editing code:
+More workers than shops does not go faster; add a shop to add a lane.
+
+Two is the floor. Close, activate and opt-out each have to prove the silence
+they wrote applies to *this* shop and **not** to another, so every retailer
+also gets a control taken from the rest of the list.
+
+The list is named, not discovered. `/domains` answers with compressed regex
+patterns rather than a list of shops, so there is no cheap way to ask the
+environment for a usable target; the broader QA framework keeps a MySQL
+catalogue for that, and dragging one in here would cost more than it is worth.
 
 ```bash
-BRING_RETAILERS=https://www.aliexpress.com,https://www.iherb.com python run.py
+BRING_RETAILERS=https://a.com,https://b.com python run.py   # replace the list
+BRING_RETAILER=missoma python run.py                        # pin to one lane
 ```
+
+Pinning is how a single failure is reproduced without waiting on the other
+lanes. With one retailer there is no control, so the scope tests skip and say so.
+
+### The preflight
+
+A named retailer goes stale the moment the environment stops carrying it, and
+then every popup test fails with "no popup" — correct product behaviour,
+reported as a bug, twenty minutes in. So each run asks first: navigate to each
+retailer and watch whether the extension sent a `/check/popup` at all.
+
+- popup shown → usable
+- checked, but the server declined → recognised, no offer here
+- no check at all → never matched the retailer list
+
+Nothing usable, or only one, and the run stops with exit code `2` and says
+which retailer to replace. `--skip-preflight` turns it off.

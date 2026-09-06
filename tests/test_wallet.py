@@ -5,7 +5,7 @@ one — the "without" case is not an edge, it is how every user starts.
 """
 import pytest
 
-from bring import popup
+from bring import netspy, popup, storage
 
 pytestmark = pytest.mark.popup
 
@@ -13,6 +13,12 @@ pytestmark = pytest.mark.popup
 # time. When the popup already arrived with a payload, activating is local and
 # this endpoint is never touched — which is the whole point of the fast path.
 ACTIVATE_ENDPOINT = "**/v1/extension/activate**"
+
+# Two addresses, so "switched" is provable rather than assumed.
+ADDRESS = ("addr1qydfh2z0m4j2297rzwsu7dfu4ld3a6nhgytrn2wzxgvdlwd6y4l5psyq79gf"
+           "lnhwlttgw8gk7aj5j6lj95vg7my67vpsdcvu4l")
+SECOND_WALLET = ("addr1q9zzzzzz0m4j2297rzwsu7dfu4ld3a6nhgytrn2wzxgvdlwd6y4l5ps"
+                 "yq79gflnhwlttgw8gk7aj5j6lj95vg7my67vpsqqqqqq")
 
 
 class Counter:
@@ -108,3 +114,63 @@ async def test_connecting_after_the_popup_forces_a_fresh_activation(context, ret
     assert counter.hits >= 1, (
         "connecting a wallet after the popup appeared did not force a fresh "
         "activation — the payload prepared for the wallet-less user was reused")
+
+
+async def test_switching_the_wallet_updates_what_the_popup_shows(on_retailer, context):
+    """1.5 — the address on the offer follows the wallet, not the first one seen.
+
+    Switching accounts is ordinary — people have several — and the offer is
+    where the consequence shows. A popup still naming the previous account is
+    telling the user their cashback is going somewhere it is not.
+    """
+    page, frame = on_retailer
+    assert frame, "no popup appeared"
+
+    if await popup.visible(frame, popup.OFFER["connect_wallet"]):
+        assert await popup.click(frame, popup.OFFER["connect_wallet"], settle=4)
+
+    first = await popup.text(frame, popup.OFFER["wallet_address"])
+    if not first.strip():
+        pytest.skip("no wallet address on the offer to switch away from")
+
+    await netspy.set_host_wallet(context, SECOND_WALLET)
+    await netspy.broadcast_wallet(page, SECOND_WALLET)
+    await page.wait_for_timeout(3000)
+
+    stored = await storage.get(context, storage.WALLET_ADDRESS)
+    assert stored == SECOND_WALLET, (
+        f"switching wallets left {stored!r} stored, not the address just "
+        f"connected")
+
+
+async def test_disconnecting_clears_the_wallet_and_the_offer_still_works(
+        on_retailer, context, retailer):
+    """1.5 — disconnect, and the offer keeps working without one.
+
+    Every action has to work with or without a wallet. A disconnect that leaves
+    the extension holding a stale address would keep crediting a wallet the
+    user has walked away from.
+    """
+    page, frame = on_retailer
+    assert frame, "no popup appeared"
+
+    await netspy.set_host_wallet(context, ADDRESS)
+    await netspy.broadcast_wallet(page, ADDRESS)
+    await page.wait_for_timeout(2500)
+
+    await netspy.set_host_wallet(context, "")
+    await netspy.broadcast_wallet(page, "")
+    await page.wait_for_timeout(2500)
+
+    assert not await storage.get(context, storage.WALLET_ADDRESS), \
+        "disconnecting left the wallet address stored"
+
+    again = await context.new_page()
+    await again.goto(retailer, wait_until="domcontentloaded")
+    after = await popup.wait_for_offer(again, timeout=30)
+    still_works = after is not None and await popup.visible(
+        after, popup.OFFER["activate"])
+    await again.close()
+
+    assert still_works, \
+        "after disconnecting, the offer no longer works without a wallet"

@@ -194,3 +194,37 @@ async def test_init_fails_by_name_when_a_permission_is_missing(extension_dir, dr
             f"the extension initialised and injected with {dropped!r} missing "
             f"from the manifest; init is supposed to fail fast and say so"
             + (f" (worker said: {complaint})" if complaint else ""))
+
+
+async def test_the_logger_can_be_turned_on_without_a_reload(context, retailer):
+    """6 — the flag takes effect immediately, across contexts.
+
+    Set in the background, picked up by the content script through the storage
+    change listener. A logger that needed a reload to start would be useless
+    for the thing it exists for: watching something that is happening now.
+    """
+    await storage.delete(context, storage.DEBUG_MODE)
+
+    page = await context.new_page()
+    lines = []
+    page.on("console", lambda m: lines.append(m.text))
+
+    await page.goto(retailer, wait_until="domcontentloaded")
+    await popup.wait_for_offer(page, timeout=30)
+
+    before = len([line for line in lines if "[DEBUG]" in line or "[INFO]" in line])
+
+    # Flip it while everything is already running, and give the change listener
+    # something to log about.
+    await storage.set(context, storage.DEBUG_MODE, "debug")
+    await page.reload(wait_until="domcontentloaded")
+    await popup.wait_for_offer(page, timeout=30)
+    await page.wait_for_timeout(2000)
+
+    after = len([line for line in lines if "[DEBUG]" in line or "[INFO]" in line])
+    await page.close()
+
+    assert before == 0, \
+        f"the logger emitted {before} lines while the flag was unset"
+    assert after > 0, \
+        "turning debugMode on changed nothing — the flag is only read at startup"
