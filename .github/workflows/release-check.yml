@@ -122,8 +122,20 @@ jobs:
           # line that matters, so passing checks are counted, not listed.
           {
             suite_line=$(grep -hoE "[0-9]+ (of [0-9]+ checks failed|checks passed)[^|]*" suite.log 2>/dev/null | tail -1)
-            failed=$(grep -cE "^  x " suite.log 2>/dev/null || echo 0)
-            walk_failed=$(grep -cE "^\[FAIL\]" walk.log 2>/dev/null || echo 0)
+            # One place that counts, because `grep -c` prints its count and
+            # *also* exits 1 when the count is zero. `grep -c ... || echo 0`
+            # therefore prints two zeroes, and the arithmetic below dies on
+            # a two-line number. It failed a run that had nothing wrong with
+            # it, which is the worst way for a report to be wrong.
+            count() {
+              [ -f "$2" ] || { echo 0; return; }
+              local n
+              n=$(grep -cE "$1" "$2" 2>/dev/null || true)
+              echo "${n:-0}"
+            }
+
+            failed=$(count "^  x " suite.log)
+            walk_failed=$(count "^\[FAIL\]" walk.log)
             total=$((failed + walk_failed))
 
             if [ "$total" -eq 0 ]; then
@@ -167,14 +179,14 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             [ -n "$suite_line" ] && echo "| suite | $suite_line |"
-            walk_ok=$(grep -cE "^\[ok \]" walk.log 2>/dev/null || echo 0)
+            walk_ok=$(count "^\[ok \]" walk.log)
             echo "| walk | $walk_ok step(s) passed, $walk_failed failed |"
             skipped=$(grep -oE "[0-9]+ skipped" suite.log 2>/dev/null | tail -1)
             [ -n "$skipped" ] && echo "| not run | $skipped |"
             echo
 
             if [ -n "$skipped" ]; then
-              echo "<details><summary>Why some checks did not run</summary>"
+              echo "<details><summary>Which checks did not run</summary>"
               echo
               echo '```'
               grep -hoE "SKIPPED.*" suite.log 2>/dev/null | sed 's/SKIPPED //' \
