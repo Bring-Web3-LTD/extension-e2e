@@ -217,24 +217,33 @@ async def test_navigation_does_not_resurrect_a_closed_popup(on_retailer, context
             await page.go_forward(wait_until="domcontentloaded")
             await page.go_back(wait_until="domcontentloaded")
 
-    returned = await popup.wait_for_popup(page, timeout=12)
-    if returned is None:
-        return
-
-    # A popup exists, and three things have to hold before that is this test's
-    # complaint. Each was measured producing a false accusation.
+    # Let the walk finish before looking. Polling for a popup while the tab is
+    # still moving finds the *control's* popup — it is a different shop and
+    # entitled to offer — and the url read afterwards says the retailer,
+    # because by then the tab has arrived. Two true facts from two different
+    # moments, and the test reports a resurrection that never happened.
     #
-    # Where the tab actually is: the walk passes through `control`, a different
-    # shop entirely entitled to offer, and a tab still moving through a redirect
-    # is not yet anywhere.
+    # Confirmed by hand against this exact sequence: the SDK logs
+    # `No popup — domain is quiet phase` on every luminskin navigation while
+    # smallrig pops correctly in between, which is the product being right.
+    try:
+        await page.wait_for_load_state("networkidle", timeout=8000)
+    except Exception:
+        pass
+    await page.wait_for_timeout(2500)
+
+    # Now both readings are of the same moment, and the popup has to still be
+    # there when the tab is demonstrably on the silenced shop.
     landed = page.url
     if storage.normalise(retailer) not in storage.normalise(landed):
         pytest.skip(
-            f"after {mode} the tab is on {landed}, not on {retailer} — whatever "
-            f"is on screen belongs to that page, not to the silenced shop")
+            f"after {mode} the tab is on {landed}, not on {retailer} — nothing "
+            f"here is about this retailer's silence")
 
-    # And whether the silence still stands. If it expired or was cleared while
-    # the walk was happening, an offer is owed and showing one is right.
+    frames = [f for f in popup.frames(page) if await popup.rendered(f)]
+    if not frames:
+        return
+
     still = await storage.quiet_entry(context, retailer)
     if not still:
         pytest.skip(
