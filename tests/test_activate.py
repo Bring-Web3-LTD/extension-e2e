@@ -6,9 +6,34 @@ import time
 
 import pytest
 
-from bring import netspy, popup, storage
+from bring import netspy, popup, storage, search
 
 pytestmark = pytest.mark.popup
+
+async def confirmed_on(page, what: str = "activating"):
+    """The activated confirmation, or a skip naming the shop's bot check.
+
+    Activation hands the tab to the affiliate network, and what comes back is
+    not always the shop: AliExpress answers the hop with its own challenge
+    (`/_____tmd_____/punish`). No confirmation can be injected on that page, so
+    "the confirmation never appeared" would be true and would say nothing about
+    the extension.
+
+    Checked only when the confirmation is missing, so a working activation is
+    never skipped for a marker that happens to be in a URL.
+    """
+    confirmed = await popup.wait_for_confirmation(page)
+    if confirmed:
+        return confirmed
+
+    marker = search.blocked_url(page.url)
+    if marker:
+        pytest.skip(
+            f"{what} sent the tab through the affiliate network and the shop "
+            f"answered with a bot check ({marker!r}); the confirmation cannot "
+            f"be shown on that page")
+    return None
+
 
 HOUR = 60 * 60 * 1000
 MINUTE = 60 * 1000
@@ -26,7 +51,7 @@ async def test_activate_shows_the_confirmation(on_retailer, retailer):
     assert await popup.click(frame, popup.OFFER["activate"], settle=4), \
         "the popup has no activate button to click"
 
-    confirmed = await popup.wait_for_confirmation(page)
+    confirmed = await confirmed_on(page)
     assert confirmed, "activating did not bring up the activated confirmation"
 
     body = await popup.body_text(confirmed)
@@ -106,7 +131,7 @@ async def test_dismissing_the_confirmation_switches_to_quiet(on_retailer, contex
     assert frame, "no popup appeared"
     assert await popup.click(frame, popup.OFFER["activate"], settle=5)
 
-    confirmed = await popup.wait_for_confirmation(page)
+    confirmed = await confirmed_on(page)
     assert confirmed, "no confirmation appeared"
 
     before = await storage.quiet_entry(context, retailer)
@@ -223,7 +248,7 @@ async def test_the_silence_is_what_keeps_it_quiet(on_retailer, context, retailer
     assert frame, "no popup appeared"
 
     assert await popup.click(frame, popup.OFFER["activate"], settle=5)
-    confirmed = await popup.wait_for_confirmation(page)
+    confirmed = await confirmed_on(page)
     assert confirmed, "activating did not bring up the confirmation"
 
     assert await popup.click(confirmed, popup.ACTIVATED["close_x"], settle=2), \
@@ -269,7 +294,7 @@ async def test_the_confirmation_comes_back_without_asking_the_server(
     assert frame, "no popup appeared"
 
     assert await popup.click(frame, popup.OFFER["activate"], settle=5)
-    assert await popup.wait_for_confirmation(page), "no confirmation to re-show"
+    assert await confirmed_on(page), "no confirmation to re-show"
 
     entry = await storage.quiet_entry(context, retailer)
     assert entry and entry.get("phase") == "activated", \

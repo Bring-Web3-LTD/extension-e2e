@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from bring import netspy, popup, retailers, storage
+from bring import netspy, popup, retailers, storage, search
 from bring.browser import current_worker, extension_browser
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -147,6 +147,12 @@ async def challenge_on(page) -> str:
     anything longer is the shop itself, and a product page that happens to
     contain "access denied" in a review is not mistaken for one.
     """
+    # The URL first: a challenge often announces itself there before it has
+    # rendered anything, and some render nothing a human would read at all.
+    marker = search.blocked_url(page.url)
+    if marker:
+        return marker
+
     try:
         text = await page.evaluate(
             "() => (document.body ? document.body.innerText : '').slice(0, 600)")

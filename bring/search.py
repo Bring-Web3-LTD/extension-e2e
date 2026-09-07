@@ -53,6 +53,26 @@ BOT_TITLES = ("unusual traffic", "before you continue", "are you a robot",
               "enter the characters you see")
 
 
+def blocked_url(url: str) -> str:
+    """The bot-check marker in *url*, or ''.
+
+    A shop's anti-bot page is reached by navigating, and not only by the
+    navigations this suite makes: activating sends the tab through the
+    affiliate network, and what comes back can be the shop's challenge rather
+    than the shop — measured on AliExpress, which answers the hop with
+    `/_____tmd_____/punish?x5secdata=...`. The confirmation cannot appear on
+    that page, and no assertion about it means anything.
+
+    Kept next to the markers it uses rather than duplicated: the same list
+    decides whether a search reached results.
+    """
+    lowered = (url or "").lower()
+    for marker in BOT_MARKERS:
+        if marker.lower() in lowered:
+            return marker
+    return ""
+
+
 def term_for(retailer_url: str) -> str:
     """The brand name to search for, from the retailer's host.
 

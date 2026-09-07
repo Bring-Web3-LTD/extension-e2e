@@ -5,7 +5,7 @@ one — the "without" case is not an edge, it is how every user starts.
 """
 import pytest
 
-from bring import netspy, popup, storage
+from bring import netspy, popup, storage, search
 
 pytestmark = pytest.mark.popup
 
@@ -94,9 +94,15 @@ async def test_activation_takes_the_fast_path_with_no_wallet_connected(context, 
 
     assert await popup.click(frame, popup.OFFER["activate"], settle=6)
     confirmed = await popup.wait_for_popup(page, timeout=25, route="activated")
+    if confirmed is None:
+        marker = search.blocked_url(page.url)
+        await page.close()
+        if marker:
+            pytest.skip(
+                f"the shop answered the affiliate hop with a bot check "
+                f"({marker!r}), so no confirmation could be shown")
+        pytest.fail("activating without a wallet did not confirm")
     await page.close()
-
-    assert confirmed, "activating without a wallet did not confirm"
     assert counter.modes, "activating sent no request to the activate endpoint"
     assert counter.modes[-1] == FAST, (
         f"activating without a wallet reported {counter.modes[-1]!r}; the popup "

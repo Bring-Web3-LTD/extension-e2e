@@ -81,18 +81,27 @@ jobs:
           aws-region: eu-central-1
           role-session-name: extension-e2e
 
-      # Only needed to seed the notification variants. Without it those five
-      # tests skip with a reason and everything else runs, so it is optional
-      # rather than a hard requirement.
+      # Only needed to seed the notification variants. Without it those tests
+      # skip with a reason and everything else runs, so it is optional rather
+      # than a hard requirement.
+      #
+      # The key is read from `env`, not tested directly in `if`. The `secrets`
+      # context is not available to an `if` expression, and the failure is not
+      # a skipped step: the workflow will not parse, every job is dropped, and
+      # the run reports "No jobs were run" with nothing to point at.
       - name: Database tunnel key
-        if: ${{ secrets.DB_SSH_KEY != '' }}
+        env:
+          DB_SSH_KEY: ${{ secrets.DB_SSH_KEY }}
+          DB_SSH_HOST: ${{ secrets.DB_SSH_HOST }}
+          DB_SSH_USER: ${{ secrets.DB_SSH_USER }}
+        if: ${{ env.DB_SSH_KEY != '' }}
         run: |
           mkdir -p ~/.ssh
-          printf '%s' "${{ secrets.DB_SSH_KEY }}" > ~/.ssh/bring-db.pem
+          printf '%s' "$DB_SSH_KEY" > ~/.ssh/bring-db.pem
           chmod 600 ~/.ssh/bring-db.pem
           {
-            echo "DB_SSH_HOST=${{ secrets.DB_SSH_HOST }}"
-            echo "DB_SSH_USER=${{ secrets.DB_SSH_USER }}"
+            echo "DB_SSH_HOST=$DB_SSH_HOST"
+            echo "DB_SSH_USER=$DB_SSH_USER"
             echo "DB_SSH_PORT=22"
             echo "DB_SSH_KEY_PATH=$HOME/.ssh/bring-db.pem"
           } >> "$GITHUB_ENV"
