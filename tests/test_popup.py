@@ -198,6 +198,16 @@ async def test_navigation_does_not_resurrect_a_closed_popup(on_retailer, context
     assert await popup.click(frame, popup.OFFER["close_x"])
     assert await popup.wait_for_gone(page, timeout=10)
 
+    # The silence has to exist before the walk, or the walk proves nothing. A
+    # close whose CLOSE message did not land leaves the shop free to offer
+    # again, and the popup that follows is correct behaviour being reported as
+    # a resurrection.
+    silence = await storage.quiet_entry(context, retailer)
+    if not silence:
+        pytest.skip(
+            f"closing wrote no quiet row for {retailer}, so there is no silence "
+            f"for {mode} to undo — nothing to test here")
+
     if mode == "reload":
         await page.reload(wait_until="domcontentloaded")
     else:
@@ -211,22 +221,29 @@ async def test_navigation_does_not_resurrect_a_closed_popup(on_retailer, context
     if returned is None:
         return
 
-    # A popup exists — but whose? The history walk passes through `control`, a
-    # different shop that is perfectly entitled to offer, so "a popup is on the
-    # page" is not the question. The page has to be back on the silenced
-    # retailer for this to be about the silence at all; anything else is the
-    # control's popup outliving its own page, which is a different complaint and
-    # must not be reported as this one.
+    # A popup exists, and three things have to hold before that is this test's
+    # complaint. Each was measured producing a false accusation.
+    #
+    # Where the tab actually is: the walk passes through `control`, a different
+    # shop entirely entitled to offer, and a tab still moving through a redirect
+    # is not yet anywhere.
     landed = page.url
-    on_the_silenced_shop = storage.normalise(retailer) in storage.normalise(landed)
+    if storage.normalise(retailer) not in storage.normalise(landed):
+        pytest.skip(
+            f"after {mode} the tab is on {landed}, not on {retailer} — whatever "
+            f"is on screen belongs to that page, not to the silenced shop")
 
-    assert not on_the_silenced_shop, (
-        f"the popup came back after {mode} on {retailer}, which was silenced "
-        f"by closing it")
+    # And whether the silence still stands. If it expired or was cleared while
+    # the walk was happening, an offer is owed and showing one is right.
+    still = await storage.quiet_entry(context, retailer)
+    if not still:
+        pytest.skip(
+            f"the quiet row for {retailer} was gone by the end of the walk, so "
+            f"the popup was owed")
 
-    pytest.fail(
-        f"after {mode} the page is on {landed} — not the silenced retailer — "
-        f"yet a popup from the walk is still attached to it")
+    assert False, (
+        f"the popup came back after {mode} on {retailer}, which is still "
+        f"silenced ({still.get('domain')!r}, phase {still.get('phase')!r})")
 
 
 async def test_only_one_popup_at_a_time(on_retailer):

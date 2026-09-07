@@ -30,7 +30,7 @@ import os
 import uuid
 from datetime import datetime, timedelta
 
-from bring import db
+from bring import config, db
 
 # Ecko. Read from the environment's own `platforms` table rather than assumed;
 # this is the fallback for when the lookup cannot run.
@@ -231,7 +231,7 @@ if __name__ == "__main__":
     parser.add_argument("variant", nargs="?", choices=sorted(VARIANTS))
     parser.add_argument("--database", default=None)
     parser.add_argument("--user-id", default=str(uuid.uuid4()))
-    parser.add_argument("--wallet", default="addr1qe2e_test_wallet")
+    parser.add_argument("--wallet", default=config.WALLET)
     parser.add_argument("--clean-all", action="store_true")
     args = parser.parse_args()
 

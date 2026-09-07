@@ -209,6 +209,9 @@ def _skip_on_challenge(ctx):
             response = await navigate(url, **options)
             marker = await challenge_on(page)
             if marker:
+                # Remembered as well as reported: the next test that needs a
+                # control should not pick this shop and lose itself too.
+                retailers.mark_blocked(url)
                 pytest.skip(
                     f"{url} answered with a bot check ({marker!r}) instead of "
                     f"the site, so the extension had no page to work on")

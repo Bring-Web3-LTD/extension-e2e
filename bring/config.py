@@ -96,3 +96,20 @@ def deployer_env_name(raw: str) -> str:
 
 def stack_name(raw: str) -> str:
     return f"{deployer_env_name(raw)}-stack"
+
+
+# The wallets these tests use, for the platform under test.
+#
+# Not invented, and not the one baked into the mock extension either: that is a
+# Cardano address (`addr1...`), and this suite runs against ecko, whose
+# addresses are Kadena public keys (`k:...`). An address from the wrong chain is
+# not a cosmetic mismatch — a purchase row seeded against it is a row the server
+# will never match to the wallet the extension reports, so the notification
+# under test is correctly never shown and the test blames the product for it.
+#
+# Both are overridable, because the platform decides the shape.
+WALLET = os.getenv("BRING_WALLET", "k:7dcf6f1f2c8f4a02d4b29eb2ae34e41718137f1e8d28157779de09ac57754d6b")
+
+# A second one, used only to prove that switching accounts changes what the
+# offer shows. Never seeded against, so it only has to be different.
+OTHER_WALLET = os.getenv("BRING_WALLET_OTHER", "k:29647637d1b93d284f8bf83430136b665412b93db2371ed1b7897d5fa2888598")

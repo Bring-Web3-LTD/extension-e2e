@@ -30,7 +30,69 @@ LAUNCH_ARGS = [
     # a results page cannot test the offer bar at all.
     "--disable-blink-features=AutomationControlled",
     "--disable-infobars",
+    # The rest of the automation tells. Each is checked by the fingerprinting
+    # scripts the big shops run, and any one of them alone is enough to be sent
+    # to a challenge page instead of the shop.
+    "--disable-automation",
+    "--disable-dev-shm-usage",
+    "--no-sandbox",
+    "--disable-features=IsolateOrigins,site-per-process,TranslateUI",
+    "--disable-popup-blocking",
+    "--start-maximized",
+    "--lang=en-US,en",
 ]
+
+# What an automated Chrome still admits to after the launch flags, and what a
+# real one says instead. All of it is read by the same fingerprinting scripts:
+# `navigator.webdriver` is the blunt one, but an empty plugin list, no language
+# list and a WebGL vendor of "Google Inc." are each on their own enough to earn
+# a challenge page.
+#
+# Run before any of the page's own code, so the page never sees the original
+# values. This is not about defeating a site's security — it is about a QA
+# browser being served the same shop a person is served, which is the only way
+# a check of the extension means anything.
+STEALTH = """
+(() => {
+  // The flag Playwright cannot unset from the command line alone.
+  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+  // A real profile has languages and plugins; an automated one has neither.
+  Object.defineProperty(navigator, 'languages',
+                        { get: () => ['en-US', 'en'] });
+  Object.defineProperty(navigator, 'plugins', {
+    get: () => [
+      { name: 'PDF Viewer', filename: 'internal-pdf-viewer' },
+      { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer' },
+      { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer' },
+    ],
+  });
+  Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+  Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+
+  // Headless Chrome reports no chrome runtime object at all.
+  window.chrome = window.chrome || {};
+  window.chrome.runtime = window.chrome.runtime || {};
+
+  // Headless answers 'denied' for notifications while the real prompt is
+  // 'default', and the mismatch with Notification.permission is itself a tell.
+  const query = navigator.permissions && navigator.permissions.query;
+  if (query) {
+    navigator.permissions.query = (parameters) =>
+      parameters && parameters.name === 'notifications'
+        ? Promise.resolve({ state: Notification.permission })
+        : query.call(navigator.permissions, parameters);
+  }
+
+  // SwiftShader gives away a headless GPU; report what a real machine reports.
+  const getParameter = WebGLRenderingContext.prototype.getParameter;
+  WebGLRenderingContext.prototype.getParameter = function (parameter) {
+    if (parameter === 37445) return 'Intel Inc.';                 // UNMASKED_VENDOR
+    if (parameter === 37446) return 'Intel Iris OpenGL Engine';   // UNMASKED_RENDERER
+    return getParameter.call(this, parameter);
+  };
+})();
+"""
 
 
 def chromium_major() -> str:
@@ -99,7 +161,17 @@ async def extension_browser(extension_dir: Path, profile_dir: Path, *,
             # Playwright adds this by default, and it is what sets
             # navigator.webdriver.
             ignore_default_args=["--enable-automation"],
+            # A real profile has a locale and a timezone; the automation
+            # defaults are another thing a fingerprint checks.
+            locale="en-US",
+            timezone_id="America/New_York",
         )
+
+        # Before any page script runs, on every page and frame, for the life of
+        # the context — including pages the product opens itself, which is where
+        # the affiliate redirect lands.
+        await context.add_init_script(STEALTH)
+
         if trace:
             try:
                 await context.tracing.start(screenshots=True, snapshots=True,

@@ -5,7 +5,7 @@ one — the "without" case is not an edge, it is how every user starts.
 """
 import pytest
 
-from bring import netspy, popup, storage, search
+from bring import netspy, popup, storage, search, config
 
 pytestmark = pytest.mark.popup
 
@@ -22,10 +22,11 @@ FAST = "fastActivation"          # the popup already carried the payload
 STANDALONE = "standAloneActivation"   # worked out at click time
 
 # Two addresses, so "switched" is provable rather than assumed.
-ADDRESS = ("addr1qydfh2z0m4j2297rzwsu7dfu4ld3a6nhgytrn2wzxgvdlwd6y4l5psyq79gf"
-           "lnhwlttgw8gk7aj5j6lj95vg7my67vpsdcvu4l")
-SECOND_WALLET = ("addr1q9zzzzzz0m4j2297rzwsu7dfu4ld3a6nhgytrn2wzxgvdlwd6y4l5ps"
-                 "yq79gflnhwlttgw8gk7aj5j6lj95vg7my67vpsqqqqqq")
+# The platform's own wallets, from one place — see config.WALLET. These were
+# Cardano addresses while the suite ran against ecko, which reads as a wallet
+# the platform would never hold.
+ADDRESS = config.WALLET
+SECOND_WALLET = config.OTHER_WALLET
 
 
 class Counter:

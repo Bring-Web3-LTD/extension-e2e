@@ -60,15 +60,38 @@ def primary() -> str:
     return sites()[0]
 
 
+#: Shops that answered with a bot check this run. A blocked shop is still a
+#: fine subject — its own tests skip and say so — but it is a terrible
+#: *control*, because every test that merely navigates to it to prove a silence
+#: did not spread lands on the challenge page and skips too. Measured: one
+#: blocked shop took twelve checks off the three healthy ones with it.
+_blocked = set()
+
+
+def mark_blocked(site: str) -> None:
+    """Remember that *site* served a bot check, so it stops being chosen."""
+    if site:
+        _blocked.add(host(site))
+
+
+def is_blocked(site: str) -> bool:
+    return host(site) in _blocked
+
+
 def control_for(site: str) -> str:
     """A different retailer, to prove a silence did not leak onto it.
+
+    Prefers one that is answering normally. The control is only ever visited to
+    show that nothing happened to it, so any healthy shop will do — and picking
+    a blocked one throws away a check that had nothing wrong with it.
 
     Returns None when the run was pinned to a single retailer: the tests that
     need a real control then skip, rather than asserting that a shop did not
     silence itself, which would pass while proving nothing.
     """
     others = [s for s in sites() if s != site]
-    return others[0] if others else None
+    healthy = [s for s in others if not is_blocked(s)]
+    return (healthy or others or [None])[0]
 
 
 def label(url: str) -> str:

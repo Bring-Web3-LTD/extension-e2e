@@ -275,8 +275,16 @@ async def test_the_activated_shop_shows_the_confirmation_until_it_is_closed(
             f"offer rather than the activated confirmation")
         pytest.skip(f"{host} showed nothing at all on the visit after activating")
 
-    assert await popup.click(confirmation, popup.ACTIVATED["close_x"], settle=3), \
-        "the activated confirmation has no close control"
+    # A detached frame here is the confirmation closing itself as it is
+    # clicked, which is the outcome asked for — not a failure to click.
+    try:
+        clicked = await popup.click(confirmation, popup.ACTIVATED["close_x"],
+                                    settle=3)
+    except Exception as detached:
+        if "detached" not in str(detached).lower():
+            raise
+        clicked = True
+    assert clicked, "the activated confirmation has no close control"
     await tab.close()
 
     # Closed: the shop is now quiet, and a revisit brings nothing back.

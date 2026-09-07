@@ -15,13 +15,14 @@ import time
 
 import pytest
 
-from bring import netspy, popup, storage
+from bring import netspy, popup, storage, config
 
 pytestmark = pytest.mark.notification
 
 HOUR_MS = 60 * 60 * 1000
-ADDRESS_A = "addr1qydfh2z0m4j2297rzwsu7dfu4ld3a6nhgytrn2wzxgvdlwd6y4l5psyq79gflnhwlttgw8gk7aj5j6lj95vg7my67vpsdcvu4l"
-ADDRESS_B = "addr1q9zzzzzz0m4j2297rzwsu7dfu4ld3a6nhgytrn2wzxgvdlwd6y4l5psyq79gflnhwlttgw8gk7aj5j6lj95vg7my67vpsqqqqqq"
+# The platform's own wallets, from one place — see config.WALLET.
+ADDRESS_A = config.WALLET
+ADDRESS_B = config.OTHER_WALLET
 
 NEUTRAL = "https://example.com"
 
