@@ -77,9 +77,11 @@ async def test_no_popup_when_the_marker_is_only_on_a_hop(context, retailer):
     origin = retailers.origin(retailer)
     entry = f"{origin}/e2e-entry"
     hop = f"{origin}/e2e-hop?irclickid={MARKER_VALUE}"
-    final = f"{origin}/e2e-landed"
+    # The shop's own page, not one of ours: a redirect's target cannot be
+    # intercepted, and landing on the real retailer is the case anyway.
+    final = f"{origin}/"
 
-    await pages.redirect_through(context, entry, [hop], pages.plain("Landed"), final)
+    await pages.redirect_through(context, entry, hop, final)
 
     page = await context.new_page()
     await page.goto(entry, wait_until="domcontentloaded")

@@ -35,6 +35,26 @@ from bring import netspy, storage
 
 pytestmark = pytest.mark.followups
 
+def ours(error) -> bool:
+    """Whether a page error came from the extension rather than from the shop.
+
+    `pageerror` fires for every uncaught throw on the page, and a real retailer
+    throws a handful on any given load — its own analytics, its own carousel.
+    Asserting on all of them makes "the SDK is clean" depend on whether
+    somebody else's script was having a good day, and the failure it produces
+    quotes the shop's stack while blaming the extension.
+
+    Attribution is by stack: the content script runs from a
+    `chrome-extension://` URL, so anything thrown by the code under test names
+    one. An error with no stack at all is kept — unattributable is not the same
+    as innocent, and dropping it silently would hide the crash this is for.
+    """
+    stack = getattr(error, "stack", None) or ""
+    if not stack:
+        return True
+    return "chrome-extension://" in stack
+
+
 KEY = "followups"
 MINUTE = 60_000
 
@@ -245,7 +265,8 @@ async def test_a_malformed_rule_is_ignored_rather_than_crashing(context, page):
     ])
 
     errors = []
-    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.on("pageerror",
+            lambda e: errors.append(str(e)) if ours(e) else None)
     await visit(page, "/one")
 
     assert not errors, f"a malformed follow-up rule threw: {errors[:2]}"

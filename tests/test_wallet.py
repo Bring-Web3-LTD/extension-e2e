@@ -9,10 +9,17 @@ from bring import netspy, popup, storage
 
 pytestmark = pytest.mark.popup
 
-# The iframe calls this only when it has to work the activation out at click
-# time. When the popup already arrived with a payload, activating is local and
-# this endpoint is never touched — which is the whole point of the fast path.
+# The iframe posts here on every activation. What the fast path changes is not
+# whether the call happens but whether the user waits for it: with a payload
+# already in hand the request goes out `keepalive` and the answer is never
+# read, so the confirmation is instant (api/activate.ts). The request says which
+# path it took in `activationMode`, and that is the only honest thing to assert
+# — "the endpoint was never touched" describes a product that does not exist,
+# and fails on a perfectly working fast activation.
 ACTIVATE_ENDPOINT = "**/v1/extension/activate**"
+
+FAST = "fastActivation"          # the popup already carried the payload
+STANDALONE = "standAloneActivation"   # worked out at click time
 
 # Two addresses, so "switched" is provable rather than assumed.
 ADDRESS = ("addr1qydfh2z0m4j2297rzwsu7dfu4ld3a6nhgytrn2wzxgvdlwd6y4l5psyq79gf"
@@ -22,14 +29,20 @@ SECOND_WALLET = ("addr1q9zzzzzz0m4j2297rzwsu7dfu4ld3a6nhgytrn2wzxgvdlwd6y4l5ps"
 
 
 class Counter:
-    """How many times the iframe asked the server to activate."""
+    """The activation requests the iframe sent, and how each described itself."""
 
     def __init__(self):
         self.hits = 0
+        self.modes = []
 
     async def watch(self, context):
         async def handler(route):
             self.hits += 1
+            try:
+                body = route.request.post_data_json or {}
+                self.modes.append(body.get("activationMode"))
+            except Exception:
+                self.modes.append(None)
             await route.continue_()
 
         await context.route(ACTIVATE_ENDPOINT, handler)
@@ -61,11 +74,15 @@ async def test_connecting_a_wallet_shows_its_address(on_retailer):
         "connecting a wallet did not put an address in the popup"
 
 
-async def test_activation_is_local_when_no_wallet_is_connected(context, retailer):
+async def test_activation_takes_the_fast_path_with_no_wallet_connected(context, retailer):
     """1.5 — with no wallet, everything was prepared at the popup call.
 
-    The server can compute the activation up front because nothing about it is
-    going to change, so clicking activate must not go back to it.
+    Nothing about the activation can change before the click, so the server
+    computes it up front and the click spends it rather than asking again. The
+    request still goes out — it has to, the activation must be recorded — but it
+    is sent `keepalive` and its answer is never read, which is what makes the
+    confirmation instant. `activationMode` is where the client says which of the
+    two it did.
     """
     counter = Counter()
     await counter.watch(context)
@@ -80,10 +97,11 @@ async def test_activation_is_local_when_no_wallet_is_connected(context, retailer
     await page.close()
 
     assert confirmed, "activating without a wallet did not confirm"
-    assert counter.hits == 0, (
-        f"activating without a wallet called the activate endpoint "
-        f"{counter.hits} time(s); the payload should already have been in the "
-        f"popup response")
+    assert counter.modes, "activating sent no request to the activate endpoint"
+    assert counter.modes[-1] == FAST, (
+        f"activating without a wallet reported {counter.modes[-1]!r}; the popup "
+        f"response should already have carried the payload, making this "
+        f"{FAST!r}")
 
 
 async def test_connecting_after_the_popup_forces_a_fresh_activation(context, retailer):
@@ -111,9 +129,11 @@ async def test_connecting_after_the_popup_forces_a_fresh_activation(context, ret
     await page.close()
 
     assert confirmed, "activating after connecting a wallet did not confirm"
-    assert counter.hits >= 1, (
-        "connecting a wallet after the popup appeared did not force a fresh "
-        "activation — the payload prepared for the wallet-less user was reused")
+    assert counter.modes, "activating sent no request to the activate endpoint"
+    assert counter.modes[-1] == STANDALONE, (
+        f"connecting a wallet after the popup appeared still reported "
+        f"{counter.modes[-1]!r} — the payload prepared for the wallet-less user "
+        f"was reused, and the activation is credited to the wrong user")
 
 
 async def test_switching_the_wallet_updates_what_the_popup_shows(on_retailer, context):

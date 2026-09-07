@@ -16,6 +16,8 @@ the part under test — while the page itself is whatever the case needs.
 Anything asserting on the retailer's *real* content must not use these.
 """
 import asyncio
+import json
+import re
 
 BASE_STYLE = "body{font-family:system-ui;padding:40px;line-height:1.6}"
 
@@ -132,28 +134,61 @@ async def serve_site(target, origin: str, pages: dict, default: str):
     await target.route(f"{origin}/**", handler)
 
 
-async def redirect_through(target, entry_url: str, hops: list, final_html: str,
-                           final_url: str):
-    """Send *entry_url* through *hops* by real 3xx responses, then serve a page.
+def exactly(url: str):
+    """Match one URL and nothing else, query string included.
 
-    The point of section 1.8's redirect-chain case is that the affiliate
-    parameter sits on an intermediate hop and not on the URL the browser ends
-    up at — so a clean-looking final URL is not enough for the extension to
-    stay silent. Fulfilling with a 302 makes webRequest see genuine hops.
+    A route registered with a plain string is a *glob*, where `?` matches any
+    single character rather than starting a query — and a URL carrying one is
+    then not matched by the very string it was built from. Verified: a route on
+    `https://x/hop?irclickid=abc` never fires for that exact URL, while the same
+    URL as a regex does.
+
+    That failure is silent and looks like the product's. The affiliate marker in
+    section 1.8 lives in a query string by definition, so the hop meant to carry
+    it was never intercepted, the browser stopped on a real 404, and the test
+    reported that the extension had ignored a redirect nobody ever sent it.
     """
-    chain = [entry_url] + list(hops)
+    return re.compile(r"^" + re.escape(url) + r"$")
 
-    for current, nxt in zip(chain, chain[1:] + [final_url]):
-        async def handler(route, location=nxt):
-            await route.fulfill(status=302, headers={"location": location}, body="")
 
-        await target.route(current, handler)
+async def redirect_through(target, entry_url: str, hop_url: str,
+                           final_url: str):
+    """Arrive at *final_url* through a real 3xx on *hop_url*, marker and all.
 
-    async def land(route):
-        await route.fulfill(status=200, content_type="text/html; charset=utf-8",
-                            body=final_html)
+    Section 1.8's case is an affiliate parameter that exists only on an
+    intermediate hop: the URL the browser ends up at is clean, so an extension
+    that looks solely at where it stopped hijacks a click somebody else already
+    owns. Reproducing it needs a genuine 3xx, because that is what
+    `webRequest.onBeforeRedirect` reports and what the SDK's redirect chain is
+    built from — markup that sets `location` produces no redirect at all and the
+    chain stays empty.
 
-    await target.route(final_url, land)
+    The shape is forced by Playwright. A request produced by a fulfilled
+    redirect is **not** matched against routes again: it goes straight to the
+    network. So the obvious chain — fulfil the entry with a 302 to the hop, then
+    fulfil the hop with a 302 onward — stops dead at the hop, because the hop's
+    route never runs. Measured, not assumed: the hop request is made and no
+    handler fires for it.
+
+    So the entry is answered with markup that *navigates* to the hop, which
+    makes the hop a fresh top-level request and therefore interceptable, and the
+    hop is answered with the 302. Its target is left to the real site, since
+    intercepting it is exactly what cannot be done — which is no loss: landing
+    on the shop's own page is the case under test.
+
+    One hop, for the same reason: a second would be a redirect target.
+    """
+    async def enter(route):
+        await route.fulfill(
+            status=200, content_type="text/html; charset=utf-8",
+            body=("<!doctype html><meta charset=utf-8><title>entry</title>"
+                  f"<script>location.replace({json.dumps(hop_url)})</script>"))
+
+    async def bounce(route):
+        await route.fulfill(status=302, headers={"location": final_url}, body="")
+
+    await target.route(exactly(entry_url), enter)
+    await target.route(exactly(hop_url), bounce)
 
 
 async def wait_for(page, expression: str, timeout: float = 10) -> bool:

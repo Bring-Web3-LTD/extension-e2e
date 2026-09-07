@@ -65,7 +65,44 @@ OFFERBAR = {
     "optout": "#offerbar-opt-out-btn",
     "cashback": "#offerbar-cashback-amount",
     "spacer": "#offerbar-spacer",
+    # Its own opt-out (pages/Offerbar/Optout), not the popup's.
+    "optout_panel": "#optout-container",
+    "optout_title": "#optout-title",
+    "optout_24h": "#optout-24-hours-btn",
+    "optout_30d": "#optout-30-days-btn",
+    "optout_forever": "#optout-forever-btn",
+    "optout_back": "#optout-back-btn",
 }
+
+# The top bar. Same feature as the offer bar, different layout and a different
+# route: the server sends `framed` alongside `isOfferBar`, and the SDK prefers
+# it (`page: popupData.framed ? 'framed' : (isOfferBar ? 'offerbar' : ...)`).
+# Its ids share nothing with the offer bar's, which is why looking for
+# `#offerbar-*` on a top bar finds an empty page and reports a missing bar.
+TOPBAR = {
+    "container": "#tb-container",
+    "activate": "#tb-activate-btn",
+    "close_top": "#tb-close-btn",
+    "close_bottom": "#tb-close-btn",
+    "optout": "#tb-opt-out-btn",
+    "offer_text": "#tb-offer-text",
+    "retailer_name": "#tb-retailer-name",
+    # Its own opt-out (pages/Framed/Optout), not the popup's.
+    "optout_panel": "#tb-optout-banner",
+    "optout_title": "#tb-optout-title",
+    "optout_24h": "#tb-optout-24-hours-btn",
+    "optout_30d": "#tb-optout-30-days-btn",
+    "optout_forever": "#tb-optout-forever-btn",
+    "optout_back": "#tb-optout-back-btn",
+}
+
+# How the top bar makes room: `resizePage` writes these three onto `body` with
+# `!important` and restores whatever was there on cleanup. So "it gave the space
+# back" is exactly "these inline properties are gone again" — which the offer
+# bar answers differently, with a spacer element.
+BODY_RESERVATION = ("() => { const s = document.body.style;"
+                    "  return { width: s.width, height: s.height,"
+                    "           transform: s.transform }; }")
 
 NOTIFICATION = {
     "simple": "#notification-container-simple",
@@ -86,6 +123,13 @@ NOTIFICATION = {
     "close_x": "#close-btn-icon",
 }
 
+# There are three opt-out screens, one per surface, and they share no ids: the
+# popup's two-step card (components/OptOut), and one apiece for the two bars
+# (pages/Framed/Optout, pages/Offerbar/Optout). The bars' are a single line —
+# pick a duration and it applies, with no Apply button — because a bar is 71px
+# tall. This map is the popup's; a bar's lives in its own selector map above,
+# and using this one against a bar finds nothing and reports a working opt-out
+# as missing.
 OPTOUT = {
     "container": "#opt-out-container",
     "card": "#opt-out-card",
@@ -116,7 +160,8 @@ SURFACE_MARKERS = ", ".join((
     "#bring-widget-collapsed",       # the widget badge
     "#bring-widget-expanded",
     "#activated-container",          # the confirmation
-    "#offerbar-container",           # the bar
+    "#offerbar-container",           # the offer bar
+    "#tb-container",                 # the top bar, its other layout
     "#opt-out-container",
     "#notification-container-simple",
     "#notification-container-pairing",
@@ -276,6 +321,49 @@ async def wait_for_confirmation(page, timeout: float = 60):
             break        # still navigating, or already past it; the poll copes
 
     return await wait_for_popup(page, timeout=timeout, route="activated")
+
+
+#: The two layouts the server can answer a search with. Both are "the bar".
+BAR_ROUTES = ("offerbar", "framed")
+
+
+def bars(page) -> list:
+    """Every bar frame, whichever layout the server chose."""
+    return [f for f in page.frames
+            if is_bring_frame(f) and route_of(f) in BAR_ROUTES]
+
+
+async def controls_for(frame):
+    """The selector set this bar actually uses, by looking at what it rendered.
+
+    Asking the frame rather than trusting the route: the two layouts are the
+    same feature and a test should not care which arrived, but they share no
+    ids, so something has to decide.
+    """
+    if await visible(frame, TOPBAR["container"]):
+        return TOPBAR
+    return OFFERBAR
+
+
+async def wait_for_bar(page, timeout: float = 25):
+    """The bar in either layout, once it has rendered."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        for frame in bars(page):
+            if await rendered(frame):
+                return frame
+        await asyncio.sleep(0.25)
+    return None
+
+
+async def bars_gone(page, timeout: float = 10) -> bool:
+    """Whether the bar has left, in whichever layout it arrived."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        if not bars(page):
+            return True
+        await asyncio.sleep(0.2)
+    return not bars(page)
 
 
 async def wait_for_gone(page, timeout: float = 10, route: str = None) -> bool:

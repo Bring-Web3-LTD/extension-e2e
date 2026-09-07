@@ -170,7 +170,7 @@ and keeps everything the client is responsible for.*
 | Hijack protection | **yes** | `test_a_stood_down_retailer_gets_no_bar` |
 | **Keyword search silences the retailer, not the engine** | **yes** | both close and activate assert Google was left alone |
 | **triggerType `keyword`** | **yes** | `test_a_keyword_search_is_reported_as_a_keyword` |
-| **OB vs TB told apart** | **no** | Both are the same surface here |
+| **OB vs TB told apart** | **part** | `popup.controls_for` reads which layout rendered; nothing asserts *which* one a search should get |
 | Found by direct visit (KD) vs inline search | **no** | Only the keyword path |
 | Placed next to a named element; nothing if absent | **no** | |
 | Follow-ups in the bar | **no** | |
@@ -218,7 +218,7 @@ and keeps everything the client is responsible for.*
 | Opt-out clears lazily | **yes** | see 1.4 |
 | Corrupted list re-downloads | **yes** | `test_a_corrupted_retailer_list_is_re_downloaded` |
 | Deprecated keys are gone | **yes** | `test_deprecated_keys_are_gone_after_the_upgrade` |
-| **`extensionMemoryTest` written on startup** | **yes — and it is not** | `test_storage_self_test_ran`. `canSaveToMemory` is defined in the SDK and **never called**; the string does not appear in the built bundle. |
+| **`extensionMemoryTest` written on startup** | **n/a** | Not checked. `canSaveToMemory` exists in the SDK and is never called; confirmed as intended, so there is nothing to assert. |
 | No unexpected keys | **yes** | `test_every_expected_key_is_accounted_for` |
 | Per-key bad-data behaviour, all 23 | **part** | `quietDomains` and `relevantDomains` only |
 | Wallet address shows that wallet's history | **no** | |

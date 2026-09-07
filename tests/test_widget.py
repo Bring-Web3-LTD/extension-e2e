@@ -107,14 +107,19 @@ async def test_the_expanded_offer_reaches_the_optout(page, widget_retailer):
         "opt-out did not open from the widget"
 
 
-async def test_the_badge_dismiss_does_not_silence_the_retailer(page, context,
-                                                               widget_retailer):
-    """7.1 — the badge's own X is a dismiss, not the popup's close.
+async def test_the_badge_dismiss_silences_the_retailer(page, context,
+                                                      widget_retailer):
+    """7.1 — dismissing the badge is a close, and silences the shop for 30 min.
 
-    They look alike and mean different things: dismissing the badge should put
-    the widget away for now, while the expanded offer's X is a real close that
-    silences the retailer for half an hour. Writing quietDomains here would
-    silence a retailer the user never actually saw an offer for.
+    The badge's X and the expanded offer's X differ only in what they report:
+    the badge adds `isWidget: true` to its analytics (Widget.tsx). They share
+    the close itself — `Home.tsx` hands the widget the same `close` the offer
+    gets, and that sends ACTIONS.CLOSE with the domain and thirty minutes, which
+    the background turns straight into a quiet row with no widget branch of any
+    kind (handleContentMessages.ts, `case 'CLOSE'`).
+
+    So putting the badge away is a decision about the shop, not a decision to
+    tidy the screen — confirmed as intended.
     """
     frame = await badge_on(page, widget_retailer)
 
@@ -123,11 +128,25 @@ async def test_the_badge_dismiss_does_not_silence_the_retailer(page, context,
     assert await popup.wait_for_gone(page, timeout=8), \
         "dismissing the badge left the widget on the page"
 
+    # Behaviour first: come back and nothing should appear.
+    again = await context.new_page()
+    await again.goto(widget_retailer, wait_until="domcontentloaded")
+    back = await popup.wait_for_popup(again, timeout=15)
+    await again.close()
+    assert back is None, \
+        f"{widget_retailer} offered again straight after the badge was dismissed"
+
+    # Then the row that explains it, and its window.
     entry = await storage.quiet_entry(context, widget_retailer)
-    assert entry is None, (
-        f"dismissing the badge silenced {widget_retailer} "
-        f"({entry.get('domain')!r}, phase {entry.get('phase')!r}); that is the "
-        f"expanded offer's close, not the badge's dismiss")
+    assert entry, (
+        f"nothing came back, but quietDomains has no row for "
+        f"{widget_retailer} to say why")
+
+    window = storage.window_ms(entry)
+    assert window is not None and abs(window - CLOSE_QUIET_MS) <= 2 * MINUTE, (
+        f"dismissing the badge silenced {widget_retailer} for "
+        f"{window / MINUTE if window else None} minutes, not the "
+        f"{CLOSE_QUIET_MS / MINUTE:.0f} a close writes")
 
 
 async def test_the_expanded_offer_close_does_silence(page, context, widget_retailer):

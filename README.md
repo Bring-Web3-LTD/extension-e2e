@@ -30,6 +30,7 @@ only, usable today.
 | Self-heal, top-frame-only injection, SPA routes | 1.11, 1.12, 1.6 | `tests/test_injection.py` |
 | Wallet states and the fast activation path | 1.5 | `tests/test_wallet.py` |
 | Notification request storm, backoff, recovery | 3.1 | `tests/test_notifications.py` |
+| The bar over search results: appears, closes, activates, opts out | 2 | `tests/test_offerbar.py` |
 | Saved `bring_*` state, all 23 keys | 4 | `tests/test_storage.py` |
 | No network, corrupt data, permissions, debug logger | 5, 6 | `tests/test_robustness.py` |
 
@@ -42,7 +43,12 @@ only, usable today.
 - Follow-up matchers — thank-you page, pop-on-the-Nth-visit (section 1.9).
   The rule is armed by the server; the client half is covered where it can be
   (expired rows not shadowing live ones).
-- Offer bar / top bar (section 2), portal, wallet platform themes, countries.
+- Which of the bar's two layouts a search gets. The server answers with
+  `isOfferBar`, with `framed`, or with both, and the SDK prefers `framed` — so
+  the surface served today is the top bar. The tests drive whichever arrives
+  rather than requiring one, which means they would not notice the server
+  quietly switching between them.
+- Portal, wallet platform themes, countries.
 
 ---
 

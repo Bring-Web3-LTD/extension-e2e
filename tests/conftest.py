@@ -119,6 +119,48 @@ def control(retailer) -> str:
     return other
 
 
+# What a shop's edge serves instead of the shop when it decides the browser is
+# a robot. Cloudflare's is the common one; the others are here because each
+# looks exactly like a missing popup and there is nothing to distinguish them
+# from a real defect except the words on the page.
+CHALLENGE_MARKERS = (
+    "verify you are human",
+    "checking your browser",
+    "needs to be verified before you can proceed",
+    "just a moment",
+    "pardon our interruption",
+    "enable javascript and cookies to continue",
+    "access denied",
+    "request unsuccessful",
+)
+
+
+async def challenge_on(page) -> str:
+    """The bot-check text this page is showing instead of its content, or ''.
+
+    A retailer that answers with a challenge has not loaded, so the extension
+    has nothing to match, no popup can appear, and every assertion about one is
+    meaningless. Left undetected this reports a working product as broken —
+    seventeen times in one run, when a single shop was blocked.
+
+    Read from a short prefix of the body: a challenge page is a few lines, so
+    anything longer is the shop itself, and a product page that happens to
+    contain "access denied" in a review is not mistaken for one.
+    """
+    try:
+        text = await page.evaluate(
+            "() => (document.body ? document.body.innerText : '').slice(0, 600)")
+    except Exception:
+        return ""
+    lowered = (text or "").strip().lower()
+    if len(lowered) > 600:
+        return ""
+    for marker in CHALLENGE_MARKERS:
+        if marker in lowered:
+            return marker
+    return ""
+
+
 # ── the browser ─────────────────────────────────────────────────────
 
 @pytest.fixture(scope="session")
@@ -134,6 +176,7 @@ async def lane(request, extension_dir):
         shutil.rmtree(profile, ignore_errors=True)
 
     async with extension_browser(extension_dir, profile, headless=headless()) as ctx:
+        _skip_on_challenge(ctx)
         # The SDK's first-run migration writes quietDomains itself. Seeding
         # storage before it finishes gets those rows overwritten a moment
         # later, and the test then fails on a state nobody put there.
@@ -141,6 +184,34 @@ async def lane(request, extension_dir):
         yield ctx
 
     shutil.rmtree(profile, ignore_errors=True)
+
+
+def _skip_on_challenge(ctx):
+    """Make every navigation in this lane skip when the site serves a bot check.
+
+    Wrapped once here rather than at each `page.goto` because there are dozens
+    of those and the ones that forget are exactly the ones that report a
+    Cloudflare page as a missing popup.
+    """
+    open_page = ctx.new_page
+
+    async def new_page(*args, **kwargs):
+        page = await open_page(*args, **kwargs)
+        navigate = page.goto
+
+        async def goto(url, **options):
+            response = await navigate(url, **options)
+            marker = await challenge_on(page)
+            if marker:
+                pytest.skip(
+                    f"{url} answered with a bot check ({marker!r}) instead of "
+                    f"the site, so the extension had no page to work on")
+            return response
+
+        page.goto = goto
+        return page
+
+    ctx.new_page = new_page
 
 
 @pytest.fixture
@@ -164,10 +235,38 @@ async def context(request, lane):
     #
     # The global opt-out is different: it silences everything by definition, so
     # no test wants to inherit one.
+    # The control shop is cleared too, and for the opposite reason. Half the
+    # scope assertions read it to prove a silence did *not* spread, so a row
+    # left there by an earlier test for that shop — same browser, same lane —
+    # is indistinguishable from leakage, and the test blames the product for
+    # the previous test's litter. It is the shop under test's own silence that
+    # must survive nothing; the control's must not exist at the start.
     site = request.getfixturevalue("retailer") if "retailer" in request.fixturenames else None
     if site:
         await storage.forget(lane, site)
+        other = retailers.control_for(site)
+        if other:
+            await storage.forget(lane, other)
+    else:
+        # A test with no retailer of its own — the bar tests, which reach a shop
+        # through a search and only learn which one from the answer. There is no
+        # name to forget selectively, and leaving the list alone is not the safe
+        # option it looks like: getQuietDomain short-circuits locally, so one
+        # row from an earlier close means the next search sends no popup check
+        # at all, and the test skips saying the search matched nothing. Wiping
+        # is safe here because a lane runs its tests one at a time.
+        await storage.delete(lane, storage.QUIET_DOMAINS)
     await storage.delete(lane, storage.OPT_OUT)
+
+    # And the reward-check backoff, for the same reason. A successful check
+    # tells the client not to ask again for a day
+    # (`notificationCheck` = [now, now + nextCall]), and checkNotifications.ts
+    # returns early while that range is live — so one passing test leaves every
+    # later one in the lane unable to provoke a check at all. The window is
+    # then read back unchanged and the failure reads "a 1440-minute backoff
+    # instead of an hour", which is the previous test's number, not this
+    # test's.
+    await storage.delete(lane, storage.NOTIFICATION_CHECK)
 
     # Armed for every test, not only the ones that count calls. A silence
     # window is the server's decision, so the exact assertion is "the extension
@@ -196,11 +295,33 @@ async def context(request, lane):
     # the failures that needed it.
     await capture(request, lane)
 
+    # Every route the test installed goes with it. They are registered on the
+    # lane's context, which outlives the test, and Playwright matches the most
+    # recently registered first — so a test that answers `https://shop.com/**`
+    # with its own markup keeps answering it for every later test in the lane.
+    # That is not a subtle skew: the stand-down tests build a redirect chain on
+    # those same URLs and were served an injection test's page instead, landing
+    # the browser on the hop and reporting that the product failed to follow a
+    # redirect it was never sent.
+    try:
+        await lane.unroute_all(behavior="ignoreErrors")
+    except Exception:
+        pass
+
     # Then close whatever the test left open, so the next one starts on a clean
-    # tab rather than inheriting a silenced retailer's page.
-    for tab in list(lane.pages):
+    # tab rather than inheriting a silenced retailer's page — but never the
+    # last one. Chrome quits when a persistent context loses its final tab, and
+    # it takes the extension's service worker with it, so closing them all ends
+    # the lane: every remaining test in this worker then skips with "the
+    # browser died earlier", blaming a crash that was really this loop.
+    for tab in list(lane.pages)[1:]:
         try:
             await tab.close()
+        except Exception:
+            pass
+    if lane.pages:
+        try:
+            await lane.pages[0].goto("about:blank")
         except Exception:
             pass
 
@@ -234,6 +355,7 @@ async def fresh_context(request, extension_dir):
         shutil.rmtree(profile, ignore_errors=True)
 
     async with extension_browser(extension_dir, profile, headless=headless()) as ctx:
+        _skip_on_challenge(ctx)
         await storage.settled(ctx)
         request.node._bring_context = ctx
         yield ctx

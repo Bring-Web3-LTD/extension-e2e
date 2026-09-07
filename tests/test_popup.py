@@ -207,8 +207,26 @@ async def test_navigation_does_not_resurrect_a_closed_popup(on_retailer, context
             await page.go_forward(wait_until="domcontentloaded")
             await page.go_back(wait_until="domcontentloaded")
 
-    assert await popup.wait_for_popup(page, timeout=12) is None, \
-        f"the popup came back after {mode} on a retailer that was silenced"
+    returned = await popup.wait_for_popup(page, timeout=12)
+    if returned is None:
+        return
+
+    # A popup exists — but whose? The history walk passes through `control`, a
+    # different shop that is perfectly entitled to offer, so "a popup is on the
+    # page" is not the question. The page has to be back on the silenced
+    # retailer for this to be about the silence at all; anything else is the
+    # control's popup outliving its own page, which is a different complaint and
+    # must not be reported as this one.
+    landed = page.url
+    on_the_silenced_shop = storage.normalise(retailer) in storage.normalise(landed)
+
+    assert not on_the_silenced_shop, (
+        f"the popup came back after {mode} on {retailer}, which was silenced "
+        f"by closing it")
+
+    pytest.fail(
+        f"after {mode} the page is on {landed} — not the silenced retailer — "
+        f"yet a popup from the walk is still attached to it")
 
 
 async def test_only_one_popup_at_a_time(on_retailer):

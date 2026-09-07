@@ -23,7 +23,7 @@ import os
 DEFAULT = (
     "https://www.aliexpress.com",
     "https://www.perfectlens.ca",
-    "https://www.missoma.com",
+    "https://www.firesideoutdoor.com",
     "https://www.smallrig.com",
 )
 

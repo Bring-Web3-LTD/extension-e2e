@@ -513,7 +513,9 @@ async def act_offerbar(context, keyword):
 
     Whether it arrives as an offer bar or a top bar is the server's choice and
     the same surface either way — the checks below are the bar's, not the
-    layout's. Reached only by searching: nobody visits a shop to see it.
+    layout's. They share no ids, though (`#tb-*` against `#offerbar-*`), so each
+    round asks the frame which set it rendered rather than assuming one.
+    Reached only by searching: nobody visits a shop to see it.
     """
     print("\n" + "=" * 64)
     print(f"ACT 3 - the bar, searching {keyword!r} on Google")
@@ -528,22 +530,38 @@ async def act_offerbar(context, keyword):
             failures += 1
 
     async def fresh_bar():
-        """A results page with the bar on it, or (tab, None) and why."""
+        """A results page with the bar on it: (tab, frame, ctl, why).
+
+        `ctl` is the selector set the bar that actually arrived uses, and is
+        None whenever `frame` is.
+        """
         await storage.delete(context, storage.QUIET_DOMAINS)
         await netspy.install(context, netspy.PASS)
         await netspy.reset(context)
         tab = await context.new_page()
         reason = await search.search(tab, keyword, engine="google")
         if reason:
-            return tab, None, reason
-        frame = await popup.wait_for_popup(tab, timeout=20, route="offerbar")
+            return tab, None, None, reason
+        frame = await popup.wait_for_bar(tab, timeout=25)
         if frame:
-            return tab, frame, None
+            return tab, frame, await popup.controls_for(frame), None
         decided = await netspy.server_said_offerbar(context)
         if decided:
-            return tab, None, "the server asked for a bar and none appeared"
-        return tab, None, (f"the server did not ask for a bar on {keyword!r} "
-                           f"(the term is not registered here)")
+            return tab, None, None, "the server asked for a bar and none appeared"
+        return tab, None, None, (f"the server did not ask for a bar on {keyword!r} "
+                                 f"(the term is not registered here)")
+
+    async def bar_returns(tab):
+        """Search the same term again; True if a bar came back.
+
+        Asked before any stored row is read. The row is the reason for the
+        silence, not the silence itself — a plausible-looking entry with the bar
+        still appearing on the next search is the failure that matters.
+        """
+        reason = await search.search(tab, keyword, engine="google")
+        if reason:
+            return None
+        return await popup.wait_for_bar(tab, timeout=12) is not None
 
     def shop_row(rows):
         for row in rows:
@@ -552,7 +570,7 @@ async def act_offerbar(context, keyword):
         return None
 
     # 1 — it appears, with an offer in it
-    tab, frame, why = await fresh_bar()
+    tab, frame, ctl, why = await fresh_bar()
     try:
         if not frame:
             # A term the backend does not carry is not a finding; a term it
@@ -564,43 +582,57 @@ async def act_offerbar(context, keyword):
             say(False, why)
             return failures
 
-        say(True, "the bar is over the results")
-        say(await popup.visible(frame, popup.OFFERBAR["activate"]),
+        layout = "top bar" if ctl is popup.TOPBAR else "offer bar"
+        say(True, f"the bar is over the results (as the {layout})")
+        say(await popup.visible(frame, ctl["activate"]),
             "it has an activate button")
         say(not await popup.visible(frame, popup.OFFER["connect_wallet"]),
             "and no wallet-connect, which belongs to the popup")
-        say(len(popup.frames(tab, "offerbar")) == 1, "exactly one bar")
+        say(len(popup.bars(tab)) == 1, "exactly one bar")
 
-        before = await tab.evaluate("() => document.documentElement.scrollHeight")
-        if await popup.visible(frame, popup.OFFERBAR["spacer"]):
+        reserved = await tab.evaluate(popup.BODY_RESERVATION)
+        if ctl is popup.TOPBAR:
+            say(bool(reserved["transform"]),
+                "it pushes the results down rather than covering them")
+        elif await popup.visible(frame, ctl["spacer"]):
             say(True, "it reserves space rather than covering the results")
-        say(await popup.visible(frame, popup.OFFERBAR["optout"]),
+        say(await popup.visible(frame, ctl["optout"]),
             "opt-out is reachable from the bar")
     finally:
         await tab.close()
 
     # 2 — closing it silences the shop, not Google, and gives the space back
-    tab, frame, why = await fresh_bar()
+    tab, frame, ctl, why = await fresh_bar()
     try:
         if frame:
-            closed = (await popup.click(frame, popup.OFFERBAR["close_top"], settle=2)
-                      or await popup.click(frame, popup.OFFERBAR["close_bottom"], settle=2))
+            closed = (await popup.click(frame, ctl["close_top"], settle=2)
+                      or await popup.click(frame, ctl["close_bottom"], settle=2))
             say(closed, "the bar closes")
-            say(await popup.wait_for_gone(tab, timeout=10, route="offerbar"),
+            say(await popup.bars_gone(tab, timeout=10),
                 "and leaves the page")
+            back = await tab.evaluate(popup.BODY_RESERVATION)
+            say(not back["transform"], "and gives the reserved space back"
+                if not back["transform"] else
+                f"but left the page pushed down ({back['transform']})")
 
+            returned = await bar_returns(tab)
+            if returned is None:
+                print("   --  could not search again to check the silence held")
+            else:
+                say(not returned, "and stays away on the next search")
+
+            # Closing a bar quiets the search engine, not the shop: the bar
+            # belongs to the search. Both layouts hard-code 'google.com' here
+            # rather than using the searchEngineDomain they were given, so this
+            # only lines up while the engine is Google.
             rows = await storage.quiet_domains(context)
             engine = storage.entry_for(rows, "https://www.google.com")
-            say(not engine,
-                "the silence landed on the shop, not on Google"
-                if not engine else
-                f"it silenced Google itself ({engine.get('domain')!r})")
-            shop = shop_row(rows)
-            say(bool(shop),
-                f"the shop it offered is now quiet: {shop.get('domain')!r}"
-                if shop else "nothing that looks like a shop was silenced")
-            if shop:
-                window = storage.window_ms(shop)
+            say(bool(engine),
+                f"the engine it was shown on is now quiet: {engine.get('domain')!r}"
+                if engine else
+                "nothing was silenced, so the bar returns on the next search")
+            if engine:
+                window = storage.window_ms(engine)
                 say(window is not None
                     and abs(window - CLOSE_QUIET_MS) <= TOLERANCE_MS,
                     f"for {window / MINUTE:.0f} minutes" if window
@@ -609,10 +641,10 @@ async def act_offerbar(context, keyword):
         await tab.close()
 
     # 3 — activating from the bar
-    tab, frame, why = await fresh_bar()
+    tab, frame, ctl, why = await fresh_bar()
     try:
         if frame:
-            say(await popup.click(frame, popup.OFFERBAR["activate"], settle=6),
+            say(await popup.click(frame, ctl["activate"], settle=6),
                 "activate can be clicked from the bar")
             rows = await storage.quiet_domains(context)
             shop = shop_row(rows)
@@ -626,19 +658,39 @@ async def act_offerbar(context, keyword):
         await tab.close()
 
     # 4 — opt-out from the bar
-    tab, frame, why = await fresh_bar()
+    tab, frame, ctl, why = await fresh_bar()
     try:
         if frame:
-            opened = await popup.click(frame, popup.OFFERBAR["optout"], settle=2)
-            say(opened and await popup.visible(frame, popup.OPTOUT["card"]),
+            opened = await popup.click(frame, ctl["optout"], settle=2)
+            say(opened and await popup.visible(frame, ctl["optout_panel"]),
                 "opt-out opens from the bar")
+            say(all([await popup.visible(frame, ctl["optout_24h"]),
+                     await popup.visible(frame, ctl["optout_30d"]),
+                     await popup.visible(frame, ctl["optout_forever"])]),
+                "offering 24 hours, 30 days and forever")
+
+            # Press one, then prove it took: no bar on the next search, and a
+            # row covering the engine for exactly the period chosen.
+            if await popup.click(frame, ctl["optout_24h"], settle=4):
+                returned = await bar_returns(tab)
+                if returned is None:
+                    print("   --  could not search again after opting out")
+                else:
+                    say(not returned, "and 24 hours silences the next search")
+                engine = storage.entry_for(await storage.quiet_domains(context),
+                                           "https://www.google.com")
+                window = storage.window_ms(engine) if engine else None
+                say(window is not None
+                    and abs(window - 24 * 60 * MINUTE) <= 5 * MINUTE,
+                    f"for {window / MINUTE / 60:.0f} hours" if window
+                    else "but wrote no window for the engine")
     finally:
         await tab.close()
 
     # 5 — the analytics call it a keyword search
     analytics = netspy.PageCalls()
     await analytics.watch(context, "**/analytics")
-    tab, frame, why = await fresh_bar()
+    tab, frame, ctl, why = await fresh_bar()
     try:
         if frame:
             await tab.wait_for_timeout(2500)

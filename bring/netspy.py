@@ -218,7 +218,9 @@ async def server_said_offerbar(context):
     body = await last_body(context, POPUP_CHECK)
     if not isinstance(body, dict):
         return None
-    return bool(body.get("isOfferBar"))
+    # `framed` is the top-bar layout and arrives alongside `isOfferBar`; the
+    # SDK prefers it. Either one means a bar was asked for.
+    return bool(body.get("isOfferBar") or body.get("framed"))
 
 
 async def set_host_wallet(context, address: str):
