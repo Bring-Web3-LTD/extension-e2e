@@ -2,9 +2,7 @@ import json
 import os
 import shutil
 from pathlib import Path
-
 import pytest
-
 from bring import netspy, popup, retailers, storage, search
 from bring.browser import current_worker, extension_browser
 

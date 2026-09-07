@@ -39,6 +39,34 @@ class Environment:
                 f"Refusing to continue — an unreadable stack is not an absent one."
             ) from e
 
+    def age_minutes(self):
+        """How long this environment has existed, or None if it does not.
+
+        A temporary environment destroys itself after `TTL_HOURS`, and it does
+        not care that a run is halfway through. When that happened, every check
+        after the moment of death failed at once, on all four shops, with "no
+        popup appeared" — which reads like the extension collapsing and is
+        really a server that stopped answering.
+        """
+        cf = boto3.client("cloudformation", region_name=self.region)
+        try:
+            stacks = cf.describe_stacks(StackName=cfg.stack_name(self.name)).get("Stacks", [])
+            if not stacks:
+                return None
+            born = stacks[0].get("CreationTime")
+            if not born:
+                return None
+            import datetime
+            now = datetime.datetime.now(datetime.timezone.utc)
+            return (now - born).total_seconds() / 60
+        except ClientError:
+            return None
+
+    def minutes_left(self):
+        """Minutes before this environment is expected to destroy itself."""
+        age = self.age_minutes()
+        return None if age is None else cfg.TTL_HOURS * 60 - age
+
     def state(self) -> str:
 
         status = self.stack_status()
@@ -73,7 +101,29 @@ class Environment:
             state = "ready" if settled in ("CREATE_COMPLETE", "UPDATE_COMPLETE") else "broken"
 
         if state == "ready":
-            print(f"   '{self.name}' is already up — reusing it")
+            # An environment with less life left than the run needs is worse
+            # than no environment at all: the run starts, looks healthy, and
+            # collapses in the middle with failures that read as the product's.
+            left = self.minutes_left()
+            if left is not None and left < cfg.NEEDS_MINUTES:
+                print(f"   '{self.name}' is up but has about {left:.0f} minute(s) "
+                      f"of its {cfg.TTL_HOURS}h life left, and a full run needs "
+                      f"{cfg.NEEDS_MINUTES}.")
+                print("   Re-deploying to refresh it rather than dying halfway.")
+                # Not a destroy: this tool never tears an environment down —
+                # that belongs to the deployer, which knows about the shared
+                # database and the base-path mappings. Running the deployer
+                # again updates the stack in place, which is what it does for
+                # an environment that already exists.
+                self._deploy_and_wait(key)
+                self.created = True
+                return self
+
+            if left is not None:
+                print(f"   '{self.name}' is already up — reusing it "
+                      f"({left:.0f} minute(s) of life left)")
+            else:
+                print(f"   '{self.name}' is already up — reusing it")
             # A settled stack is not a working environment: a failed deploy can
             # drop the database and still leave UPDATE_COMPLETE behind. Ask it
             # for the retailer list before trusting it.
