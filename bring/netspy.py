@@ -1,21 +1,3 @@
-"""Count and steer the extension's own API calls, from inside its worker.
-
-The calls under test are made by the MV3 service worker, not by a page, so
-route interception is the wrong tool: whether Playwright sees a worker's
-requests depends on the browser build, and a counter that silently records
-nothing turns "the fix works" and "the test is broken" into the same green.
-
-Wrapping `fetch` inside the worker is exact instead. It counts what the SDK
-actually sent, and the same wrapper can make a call fail, answer with markup
-instead of JSON, or answer with an error body that carries no `nextCall` —
-which is precisely the set of failures section 3.1 is about, and none of them
-can be produced by asking the real server nicely.
-
-The wrapper lives on the worker's global scope, so it is lost if Chrome
-recycles the worker. Re-install before asserting rather than assuming it
-survived; `installed()` says whether it is still there.
-"""
-
 from bring.browser import wake_worker
 
 PASS = "pass"              # let it through, just count it
@@ -92,11 +74,6 @@ async def install(context, mode: str = PASS):
 
 
 async def installed(context) -> bool:
-    """Whether the wrapper is still on this worker.
-
-    False means Chrome recycled the worker and the counts since then are lost —
-    which a test must not read as "no calls were made".
-    """
     worker = await wake_worker(context)
     return bool(await worker.evaluate("() => !!globalThis.__bringSpy"))
 
@@ -114,6 +91,22 @@ async def calls(context, contains: str = "") -> list:
     worker = await wake_worker(context)
     seen = await worker.evaluate("() => (globalThis.__bringSpy || {}).calls || []")
     return [c for c in seen if contains in (c.get("url") or "")]
+
+
+async def await_call(context, contains: str, timeout: float = 10) -> int:
+    """Wait until the worker has made a matching request; return how many.
+
+    For the tests whose subject is "a request happened". Sleeping and counting
+    asks the same question with a guess attached, and the guess is what fails
+    when a shop or the server is a second slower than usual.
+    """
+    import asyncio
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        seen = len(await calls(context, contains))
+        if seen or asyncio.get_event_loop().time() >= deadline:
+            return seen
+        await asyncio.sleep(0.25)
 
 
 async def count(context, contains: str = "") -> int:
@@ -141,26 +134,12 @@ DOMAINS = "/domains"
 
 
 async def last_body(context, contains: str):
-    """What the server answered the most recent matching call, parsed.
-
-    The point of recording it: a silence window is the server's decision, so
-    "roughly half an hour" is the wrong assertion — it passes for a client that
-    stores a value it invented. Comparing against the number the server
-    actually sent is exact, and survives the server retuning it.
-    """
     matches = [c for c in await calls(context, contains) if c.get("body")]
     return matches[-1]["body"] if matches else None
 
 
 class PageCalls:
-    """Requests made by the *pages*, which the worker's wrapper never sees.
-
-    The iframe sends its own analytics — that is where `triggerType` lives, and
-    section 2 turns on it being `keyword` for a search and `domain` otherwise.
-    Those go out from a frame, so they are collected by routing rather than by
-    the worker wrapper. Two mechanisms because there are genuinely two callers.
-    """
-
+   
     def __init__(self):
         self.seen = []
 
@@ -203,17 +182,7 @@ async def server_quiet_ms(context):
 
 
 async def server_said_offerbar(context):
-    """What the last popup check decided about the offer bar.
 
-    Three answers, and they are not the same:
-      True   the server asked for a bar — a missing one is a finding
-      False  the server was asked and said popup, or no offer here
-      None   the server was never asked, so nothing can be concluded
-
-    Without this, "no bar appeared" covers both a broken bar and a search term
-    the backend never registered against this retailer, and a suite that cannot
-    tell them apart either invents failures or hides them.
-    """
     body = await last_body(context, POPUP_CHECK)
     if not isinstance(body, dict):
         return None
@@ -223,19 +192,6 @@ async def server_said_offerbar(context):
 
 
 async def set_host_wallet(context, address: str):
-    """Set or clear the wallet the *host extension* holds, without announcing it.
-
-    Two keys hold a wallet and they are not the same. `bring_walletAddress` is
-    the SDK's copy; plain `walletAddress` belongs to the extension the SDK is
-    embedded in, and that is the one `getWalletAddress(tabId)` asks the content
-    script for on every navigation. Clearing only the first leaves the second
-    in place, and the next page load quietly checks with the old wallet — which
-    is how a wallet-less notification variant came back showing the
-    wallet-connected screen.
-
-    No event is fired: use this to put the state right *before* a navigation,
-    and `broadcast_wallet` when the announcement itself is what is under test.
-    """
     worker = await wake_worker(context)
     if address:
         await worker.evaluate("(a) => chrome.storage.local.set({ walletAddress: a })",
@@ -245,14 +201,6 @@ async def set_host_wallet(context, address: str):
 
 
 async def broadcast_wallet(page, address: str):
-    """Announce a wallet address the way a real wallet page does.
-
-    Wallets re-broadcast from every frame on every page load, which is what
-    section 3.1's dedup exists for. The mock extension keeps the address under
-    its own unprefixed `walletAddress` key and reads it when the page fires
-    `BRING:WALLET_UPDATED`, so setting one and firing the other is the genuine
-    path — not a message injected halfway down it.
-    """
     worker = await wake_worker(page.context)
     if address:
         await worker.evaluate("(a) => chrome.storage.local.set({ walletAddress: a })",

@@ -1,13 +1,6 @@
-"""The offer popup: it appears, it closes, and the silence it writes is right.
-
-QA_TEST_PLAN sections 1.1, 1.2, 1.6, 1.7.
-"""
 import time
-
 import pytest
-
 from bring import netspy, popup, storage
-
 pytestmark = pytest.mark.popup
 
 MINUTE = 60_000
@@ -33,12 +26,6 @@ async def test_popup_appears(on_retailer, retailer):
 
 
 async def test_popup_has_agree_line_with_both_links(on_retailer):
-    """7.2 — 'By activating you agree to Deal Terms, Terms of Use'.
-
-    Both links, on every platform, and the Privacy link gone. This used to be
-    Solflare-only, so a platform still showing the old single-Terms line is the
-    regression being watched for.
-    """
     page, frame = on_retailer
     assert frame, "no popup appeared"
 
@@ -90,7 +77,7 @@ async def test_close_silences_this_retailer_only(on_retailer, context, retailer,
     assert await popup.wait_for_gone(page, timeout=10), \
         f"the popup is still on the page after clicking {control_name}"
 
-    entry = await storage.quiet_entry(context, retailer)
+    entry = await storage.await_quiet_entry(context, retailer)
     assert entry, f"closing wrote no quietDomains entry for {retailer}"
     assert entry.get("phase") == "quiet", \
         f"expected phase 'quiet' after a close, got {entry.get('phase')!r}"
@@ -133,14 +120,7 @@ async def test_close_silences_this_retailer_only(on_retailer, context, retailer,
 
 
 async def test_silence_ends_when_its_window_does(on_retailer, context, retailer):
-    """1.7 — once the window is over, the popup comes back.
 
-    The window is half an hour, so it is moved rather than waited out: the rows
-    are pushed into the past, which is the state the extension would be in after
-    the wait. The rows are left in place rather than deleted, because the SDK
-    prunes them only on the next write — an expired row still sitting there is
-    the real state, and deleting it would test a state the product never has.
-    """
     page, frame = on_retailer
     assert frame, "no popup appeared"
     assert await popup.click(frame, popup.OFFER["close_x"])
@@ -158,13 +138,6 @@ async def test_silence_ends_when_its_window_does(on_retailer, context, retailer)
 
 
 async def test_expired_row_does_not_hide_an_active_one(context, retailer):
-    """1.9 — a stale row before a live one must not shadow it.
-
-    quietDomains is read first-match, so an expired entry sitting ahead of a
-    valid one used to hide it and let the popup through on a retailer that was
-    still supposed to be silent. Rows are skipped if expired on read, and pruned
-    only on write.
-    """
     host = storage.normalise(retailer)
     now = int(time.time() * 1000)
 
@@ -187,12 +160,7 @@ async def test_expired_row_does_not_hide_an_active_one(context, retailer):
 @pytest.mark.parametrize("mode", ["reload", "back", "forward"])
 async def test_navigation_does_not_resurrect_a_closed_popup(on_retailer, context,
                                                             retailer, control, mode):
-    """1.6 — reload and history navigation re-check the page, they do not bypass.
 
-    After a close the retailer is silenced, so every one of these must stay
-    quiet. The check that they re-check at all is `test_popup_appears` arriving
-    fresh; this one is about not undoing a silence.
-    """
     page, frame = on_retailer
     assert frame, "no popup appeared"
     assert await popup.click(frame, popup.OFFER["close_x"])
@@ -202,7 +170,7 @@ async def test_navigation_does_not_resurrect_a_closed_popup(on_retailer, context
     # close whose CLOSE message did not land leaves the shop free to offer
     # again, and the popup that follows is correct behaviour being reported as
     # a resurrection.
-    silence = await storage.quiet_entry(context, retailer)
+    silence = await storage.await_quiet_entry(context, retailer)
     if not silence:
         pytest.skip(
             f"closing wrote no quiet row for {retailer}, so there is no silence "
@@ -244,7 +212,7 @@ async def test_navigation_does_not_resurrect_a_closed_popup(on_retailer, context
     if not frames:
         return
 
-    still = await storage.quiet_entry(context, retailer)
+    still = await storage.await_quiet_entry(context, retailer)
     if not still:
         pytest.skip(
             f"the quiet row for {retailer} was gone by the end of the walk, so "
@@ -268,12 +236,6 @@ async def test_only_one_popup_at_a_time(on_retailer):
 @pytest.mark.parametrize("mode", ["reload", "back", "forward"])
 async def test_navigation_re_pops_when_the_retailer_is_still_eligible(
         context, retailer, control, mode):
-    """1.6 — the other half: back, forward and refresh re-check the page.
-
-    Its sibling above proves they do not resurrect a popup that was silenced.
-    This proves they still work at all — without it, an extension that stopped
-    reacting to navigation entirely would pass that one and look correct.
-    """
     page = await context.new_page()
     await page.goto(retailer, wait_until="domcontentloaded")
     assert await popup.wait_for_offer(page, timeout=30), \

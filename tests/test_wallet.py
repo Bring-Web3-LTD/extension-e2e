@@ -1,12 +1,5 @@
-"""The wallet: connecting, switching, and the fast activation path.
-
-QA_TEST_PLAN section 1.5. Every action has to work with a wallet and without
-one — the "without" case is not an edge, it is how every user starts.
-"""
 import pytest
-
 from bring import netspy, popup, storage, search, config
-
 pytestmark = pytest.mark.popup
 
 # The iframe posts here on every activation. What the fast path changes is not
@@ -51,19 +44,6 @@ class Counter:
 
 @pytest.fixture
 async def walletless(context, page, retailer):
-    """On the retailer with no wallet connected, and that state made true.
-
-    `on_retailer` cannot be used for this: it navigates immediately, and by
-    then the wallet question is already settled. Two things put one there
-    without this test asking — the mock extension ships with an address baked
-    in, and every earlier test in this lane's browser that connected one left
-    it behind, because the browser is deliberately shared.
-
-    So the precondition is established rather than assumed. Both keys go: the
-    SDK's own `bring_walletAddress`, and the unprefixed `walletAddress` the
-    host extension holds, which is the one the content script reports on
-    navigation.
-    """
     await netspy.set_host_wallet(context, "")
     await storage.delete(context, storage.WALLET_ADDRESS)
     await storage.delete(context, storage.LAST_CHECKED_WALLET)
@@ -99,15 +79,7 @@ async def test_connecting_a_wallet_shows_its_address(walletless):
 
 
 async def test_activation_takes_the_fast_path_with_no_wallet_connected(context, retailer):
-    """1.5 — with no wallet, everything was prepared at the popup call.
 
-    Nothing about the activation can change before the click, so the server
-    computes it up front and the click spends it rather than asking again. The
-    request still goes out — it has to, the activation must be recorded — but it
-    is sent `keepalive` and its answer is never read, which is what makes the
-    confirmation instant. `activationMode` is where the client says which of the
-    two it did.
-    """
     counter = Counter()
     await counter.watch(context)
 
@@ -141,12 +113,7 @@ async def test_activation_takes_the_fast_path_with_no_wallet_connected(context, 
 
 
 async def test_connecting_after_the_popup_forces_a_fresh_activation(context, retailer):
-    """1.5 — a wallet that arrives after the popup makes the payload stale.
 
-    The payload was computed for whoever the user was when the popup was built.
-    Connecting a wallet changes that, so the client has to ask again — using the
-    stale one would credit the activation to the wrong user.
-    """
     counter = Counter()
     await counter.watch(context)
 
@@ -179,12 +146,7 @@ async def test_connecting_after_the_popup_forces_a_fresh_activation(context, ret
 
 
 async def test_switching_the_wallet_updates_what_the_popup_shows(on_retailer, context):
-    """1.5 — the address on the offer follows the wallet, not the first one seen.
 
-    Switching accounts is ordinary — people have several — and the offer is
-    where the consequence shows. A popup still naming the previous account is
-    telling the user their cashback is going somewhere it is not.
-    """
     page, frame = on_retailer
     assert frame, "no popup appeared"
 
@@ -207,12 +169,7 @@ async def test_switching_the_wallet_updates_what_the_popup_shows(on_retailer, co
 
 async def test_disconnecting_clears_the_wallet_and_the_offer_still_works(
         on_retailer, context, retailer):
-    """1.5 — disconnect, and the offer keeps working without one.
 
-    Every action has to work with or without a wallet. A disconnect that leaves
-    the extension holding a stale address would keep crediting a wallet the
-    user has walked away from.
-    """
     page, frame = on_retailer
     assert frame, "no popup appeared"
 

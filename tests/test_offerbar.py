@@ -1,39 +1,7 @@
-"""The bar: a strip over Google's results, not a popup on a shop.
-
-QA_TEST_PLAN section 2. The same offer as the popup, shown as a bar and without
-the wallet-connect option — but reached completely differently. Nobody visits a
-retailer to see it. You search, and if what you typed matches a term the backend
-has registered, the bar appears over the results.
-
-So these tests are **not** parametrised by retailer. The retailer is whatever
-the server decides the search belongs to; the input is the *keyword*, and only
-keywords the backend actually carries produce a bar. `condor` is the one known
-to work here — a shop's own name usually is not registered, and a search that
-produces no bar is then correct behaviour rather than a finding.
-
-Two things make this the most fragile file in the suite, and both are handled
-rather than left to chance. Google answers an obviously-automated browser with a
-bot check instead of results, which the launch options in bring/browser.py hide.
-And "no bar appeared" covers both a broken bar and an unregistered keyword,
-which `netspy.server_said_offerbar` tells apart by asking what the server
-actually decided.
-
-**The bar has two layouts and they share no selectors.** The server answers a
-search with `isOfferBar`, with `framed`, or with both; the SDK prefers `framed`
-when both are present (handleTabEvents.ts), so the surface served here is
-usually `/framed` — the top bar, whose ids are `#tb-*`, not `#offerbar-*`. Which
-one arrives is the server's decision and not what these tests are about, so
-every test asks the frame for its own control set instead of assuming. Looking
-for the wrong ids does not fail loudly: the frame is found, the buttons are not,
-and a healthy bar is reported as missing.
-"""
 import os
 import time
-
 import pytest
-
 from bring import netspy, popup, search, storage
-
 pytestmark = pytest.mark.offerbar
 
 MINUTE = 60_000
@@ -57,12 +25,7 @@ def keyword(request) -> str:
 
 
 async def open_bar(page, context, term):
-    """Search for *term*; return the bar and the controls it uses.
 
-    Two values because the caller needs both and only the frame knows the
-    second: `(frame, ctl)` where `ctl` is the selector map for the layout that
-    actually arrived.
-    """
     reason = await search.search(page, term, engine=ENGINE)
     if reason:
         pytest.skip(reason)
@@ -86,13 +49,6 @@ async def open_bar(page, context, term):
 
 
 async def search_again(page, term) -> bool:
-    """Search *term* once more; True if a bar came back.
-
-    Every silence in this file is checked this way before its stored row is
-    read. The row is the reason, not the behaviour — a correct-looking entry
-    with the bar still appearing is the failure that matters, and asserting on
-    storage alone cannot see it.
-    """
     reason = await search.search(page, term, engine=ENGINE)
     if reason:
         pytest.skip(f"could not search again to check the silence held: {reason}")
@@ -129,11 +85,6 @@ async def test_the_bar_offers_no_wallet_connect(page, context, keyword):
 
 
 async def test_only_one_bar_at_a_time(page, context, keyword):
-    """2 — one bar, however many frames a results page carries.
-
-    A results page is full of iframes and the content script runs in all of
-    them, so without the top-frame-only guard this is where duplicates appear.
-    """
     await open_bar(page, context, keyword)
 
     found = popup.bars(page)
@@ -141,19 +92,6 @@ async def test_only_one_bar_at_a_time(page, context, keyword):
 
 
 async def test_the_page_makes_room_and_gets_it_back(page, context, keyword):
-    """2 — the bar pushes the results down, and gives the space back on close.
-
-    A bar that overlays the results hides them; one that reserves space and then
-    keeps it leaves a gap on a page the user is still reading.
-
-    Measured on the mechanism, not on the page's height. `scrollHeight` was the
-    obvious choice and is the wrong one: a results page keeps growing while it
-    lazy-loads, so the number after the close is larger than the one before it
-    for reasons that have nothing to do with the bar, and a correct product
-    fails. The top bar reserves by writing `width`/`height`/`transform` onto
-    `body` with `!important` (resizePage.ts) and restoring them on cleanup, so
-    those three properties answer the question exactly.
-    """
     frame, ctl = await open_bar(page, context, keyword)
 
     while_open = await page.evaluate(popup.BODY_RESERVATION)
@@ -177,21 +115,7 @@ async def test_the_page_makes_room_and_gets_it_back(page, context, keyword):
 
 async def test_closing_the_bar_silences_the_engine_it_was_shown_on(
         page, context, keyword):
-    """2 — dismissing the bar quiets bars on that search engine for half an hour.
 
-    Deliberate, and worth stating because the opposite is the intuitive guess:
-    the bar belongs to the search, not to the shop, so closing it says "no bars
-    on my searches for a while" rather than "never offer me this retailer".
-    Both bar layouts send exactly that (`Framed.tsx`, `Offerbar.tsx`).
-
-    Asserted against the engine this run actually searched, not against a name.
-    Both layouts hard-code `domain: ['google.com']` on close while
-    `searchEngineDomain` sits unused beside it, so on any other engine the
-    silence lands on Google — the bar keeps reappearing where it was dismissed,
-    and stops appearing somewhere the user never touched. On Google the two
-    coincide and this passes; point the suite at another engine and it fails,
-    which is the point.
-    """
     frame, ctl = await open_bar(page, context, keyword)
 
     closed = (await popup.click(frame, ctl["close_top"], settle=2)
@@ -219,12 +143,6 @@ async def test_closing_the_bar_silences_the_engine_it_was_shown_on(
 
 
 async def test_activating_from_the_bar_silences_the_retailer(page, context, keyword):
-    """2 — activating from the bar behaves exactly like activating in the popup.
-
-    The shop is what goes quiet, not the search engine: the offer was accepted,
-    so the user is on their way to that retailer and must not be offered it
-    again. The engine stays free, because nothing was dismissed there.
-    """
     frame, ctl = await open_bar(page, context, keyword)
 
     assert await popup.click(frame, ctl["activate"], settle=6), \
@@ -244,13 +162,6 @@ async def test_activating_from_the_bar_silences_the_retailer(page, context, keyw
 
 async def test_the_activated_shop_shows_the_confirmation_until_it_is_closed(
         page, context, keyword):
-    """2 — after activating from the bar, the shop itself carries on the flow.
-
-    The row activation writes is `phase: activated`, and that is what a visit to
-    the shop reads: the confirmation, not a fresh offer. It keeps showing until
-    the user closes it, and only then does the shop go quiet — the same two
-    steps the popup has, reached from the bar.
-    """
     frame, ctl = await open_bar(page, context, keyword)
     assert await popup.click(frame, ctl["activate"], settle=6), \
         "the bar has no activate button"
@@ -325,13 +236,6 @@ OPTOUT_WINDOWS = {
 @pytest.mark.parametrize("choice", sorted(OPTOUT_WINDOWS))
 async def test_opting_out_from_the_bar_silences_the_engine_for_that_long(
         page, context, keyword, choice):
-    """2 — opting out from the bar stops bars on the engine for the period chosen.
-
-    Checked in that order: search again and see no bar, then read the row that
-    explains it and confirm the window matches the button that was pressed. A
-    row saying 24 hours while the bar reappears is not a pass, and neither is a
-    bar that stays away for a window nobody asked for.
-    """
     frame, ctl = await open_bar(page, context, keyword)
 
     assert await popup.click(frame, ctl["optout"], settle=2), \
@@ -360,12 +264,6 @@ async def test_opting_out_from_the_bar_silences_the_engine_for_that_long(
 
 
 async def test_a_keyword_search_is_reported_as_a_keyword(page, context, keyword):
-    """2 — the bar's analytics carry the server's triggerType.
-
-    `keyword` for a search, `domain` for a shop visit. Getting it wrong breaks
-    nothing a user sees, which is exactly why it needs a test: it quietly
-    corrupts the numbers the offer bar is judged on.
-    """
     analytics = netspy.PageCalls()
     await analytics.watch(context, "**/analytics")
 
@@ -384,12 +282,6 @@ async def test_a_keyword_search_is_reported_as_a_keyword(page, context, keyword)
 
 
 async def test_a_stood_down_retailer_gets_no_bar(page, context, keyword):
-    """1.8 + 2 — hijack protection applies to the bar as much as the popup.
-
-    Which shop the keyword belongs to is learned from the bar itself rather than
-    assumed: guessing what `condor` resolves to would be writing the catalogue
-    into the test, and the catalogue is exactly the thing that changes.
-    """
     frame, ctl = await open_bar(page, context, keyword)
 
     assert (await popup.click(frame, ctl["close_top"], settle=2)

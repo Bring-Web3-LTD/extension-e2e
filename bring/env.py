@@ -1,11 +1,3 @@
-"""Bring up the environment the suite tests against, and fetch its extension.
-
-One rule decides everything here: **never deploy over an environment that is
-already up.** A run joins a healthy stack, waits for one that is mid-deploy,
-and refuses a broken one rather than repairing it — repair belongs to the
-deployer's own CLI, which knows about the shared database, the base-path
-mapping and the secrets that a hand-rolled cleanup silently skips.
-"""
 import io
 import shutil
 import time
@@ -35,13 +27,6 @@ class Environment:
     # ── state ───────────────────────────────────────────────────────
 
     def stack_status(self):
-        """CloudFormation's word on this environment, or None if absent.
-
-        None must mean "there is no such stack" and nothing else. A throttle or
-        an expired token also returns nothing, and the caller turns nothing into
-        "deploy one" — which replaces the lambdas underneath a run that is using
-        them. So anything that is not a clean absence is raised.
-        """
         cf = boto3.client("cloudformation", region_name=self.region)
         try:
             stacks = cf.describe_stacks(StackName=cfg.stack_name(self.name)).get("Stacks", [])
@@ -55,13 +40,7 @@ class Environment:
             ) from e
 
     def state(self) -> str:
-        """'ready' | 'building' | 'broken' | 'none'.
 
-        'building' is its own answer on purpose. Folded into 'broken' it makes
-        the caller tear down a stack that is mid-update, and a stack whose IAM
-        role vanishes under an update lands in UPDATE_ROLLBACK_FAILED, which no
-        later deploy recovers. Two runs starting a minute apart is enough.
-        """
         status = self.stack_status()
         if status is None:
             return "none"
@@ -132,17 +111,6 @@ class Environment:
         # The task exits before CloudFormation finishes. Testing at that point
         # means testing against half-replaced lambdas.
         self.wait_for_stack()
-
-        # A finished stack is still not a usable environment: the domain caches
-        # are built afterwards, and they are built **per country and per SDK
-        # version**. That is why this waits the full settle time instead of
-        # polling until the endpoint answers — an answer proves that *some*
-        # combination is ready, not that the one this run will ask for is. A
-        # run that started on the strength of a first successful probe gets
-        # "no popup" on every retailer and reports a healthy product as broken.
-        #
-        # Only a freshly created environment pays it; joining one that is
-        # already up goes straight through.
         print(f"   environment created - settling for {cfg.SETTLE_SECONDS}s while "
               f"it builds its domain caches")
         time.sleep(cfg.SETTLE_SECONDS)
@@ -233,13 +201,6 @@ class Environment:
         return self.stack_status()
 
     def wait_until_serving(self, budget: int) -> bool:
-        """Wait for the environment to answer with a retailer list.
-
-        The retailer list is what a popup depends on, so that is what "ready"
-        has to mean. Probing it uses the same URL, base path and key the
-        extension will use, which is the only way to learn that the combination
-        this run needs actually exists.
-        """
         url = f"{cfg.env_api_url(self.name)}/domains"
         key = cfg.api_key(cfg.PLATFORM)
         print(f"   waiting for '{self.name}' to serve retailers (up to {budget}s)...")

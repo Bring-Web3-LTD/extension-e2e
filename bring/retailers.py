@@ -1,21 +1,3 @@
-"""Which retailers this run tests against, and how they spread over workers.
-
-Every test runs once per retailer. That is the unit of parallelism: one worker
-takes AliExpress, another takes the next shop, each in its own browser with its
-own profile. Adding a retailer adds a lane rather than lengthening a queue — so
-`-n 4` across four retailers costs roughly what one retailer costs alone.
-
-Two is the floor, and not arbitrarily: close, activate and opt-out each have to
-prove the silence they wrote applies to *this* retailer and not to another one.
-So every retailer also needs a control — a different shop it must not have
-touched — taken from the rest of the list.
-
-A retailer here is only correct while it is live where the browser is. A shop
-with no offer in this country returns `isValid = false` and no popup, which is
-right, and reads as a product failure if the list has gone stale. The preflight
-asks before the suite runs, so a stale name is a config error rather than forty
-red tests. When a name here starts failing everywhere, check that before the SDK.
-"""
 import os
 
 # Hand-picked: shops that stay live in most countries. Order matters only in
@@ -29,12 +11,6 @@ DEFAULT = (
 
 
 def sites() -> list:
-    """Every retailer this run tests, overridable without touching the code.
-
-    `BRING_RETAILERS` replaces the list. `BRING_RETAILER` pins the run to one
-    of them, which is how a single failure is reproduced without waiting on the
-    other lanes.
-    """
     override = os.getenv("BRING_RETAILERS", "").strip()
     chosen = ([s.strip() for s in override.split(",") if s.strip()]
               if override else list(DEFAULT))
@@ -79,16 +55,7 @@ def is_blocked(site: str) -> bool:
 
 
 def control_for(site: str) -> str:
-    """A different retailer, to prove a silence did not leak onto it.
 
-    Prefers one that is answering normally. The control is only ever visited to
-    show that nothing happened to it, so any healthy shop will do — and picking
-    a blocked one throws away a check that had nothing wrong with it.
-
-    Returns None when the run was pinned to a single retailer: the tests that
-    need a real control then skip, rather than asserting that a shop did not
-    silence itself, which would pass while proving nothing.
-    """
     others = [s for s in sites() if s != site]
     healthy = [s for s in others if not is_blocked(s)]
     return (healthy or others or [None])[0]

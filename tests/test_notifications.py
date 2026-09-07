@@ -1,22 +1,6 @@
-"""Reward notifications: the request storm that was fixed, and the surface.
-
-QA_TEST_PLAN sections 3 and 3.1.
-
-Section 3's five variants are decided entirely by five fields the server signs
-into the notification token — `promptPairing`, `new`, `eligible`, `total`,
-`expiredAt` (backend notification/db-operations.ts) — computed from rows in the
-environment's `purchases` table. The token is signed, so the variant cannot be
-faked from the client. It is produced instead: `bring/seed.py` writes the rows
-that make the server compute each one, for the user id this browser is actually
-using, and removes them afterwards. Without a reachable database those tests
-skip with a reason; everything in 3.1 needs no database at all.
-"""
 import time
-
 import pytest
-
 from bring import netspy, popup, storage, config
-
 pytestmark = pytest.mark.notification
 
 HOUR_MS = 60 * 60 * 1000
@@ -28,25 +12,13 @@ NEUTRAL = "https://example.com"
 
 
 async def settle(page, ms: int = 1500):
-    """Give the worker time to act on what just happened.
-
-    A flat sleep, and deliberately so: what is being waited for here is often
-    that *nothing* happens — a second reward check that must not be made — and
-    there is no event for the absence of a request. The numbers are the
-    smallest that held across a full run, not round figures.
-    """
     await page.wait_for_timeout(ms)
 
 
 # ── 3.1 the request storm ───────────────────────────────────────────
 
 async def test_repeated_broadcasts_of_the_same_address_make_one_check(context):
-    """3.1 — wallets re-broadcast constantly; only a real change earns a check.
 
-    Before the fix this fired a reward check per broadcast per frame per
-    navigation, which on a page with a few iframes is a burst of identical
-    requests on every page the user opens.
-    """
     await netspy.install(context, netspy.PASS)
     page = await context.new_page()
     await page.goto(NEUTRAL, wait_until="domcontentloaded")
@@ -97,11 +69,6 @@ async def test_a_real_address_change_fires_exactly_one_check(context):
 
 
 async def test_the_broadcast_is_always_answered(context):
-    """3.1 — the wallet page must not hang, even when the check is skipped.
-
-    The skipped path used to return without calling sendResponse, which leaves
-    the caller waiting and Chrome logging an unchecked runtime.lastError.
-    """
     await netspy.install(context, netspy.PASS)
     page = await context.new_page()
     await page.goto(NEUTRAL, wait_until="domcontentloaded")
@@ -121,11 +88,6 @@ async def test_the_broadcast_is_always_answered(context):
 
 
 async def test_a_failed_check_backs_off_for_an_hour(context):
-    """3.1 — one failure, then silence for an hour, not a retry per navigation.
-
-    The old bug stored `[now, NaN]`, which reads as already expired, so every
-    subsequent navigation retried a server that was not answering.
-    """
     await netspy.install(context, netspy.FAIL)
     page = await context.new_page()
     await page.goto(NEUTRAL, wait_until="domcontentloaded")
@@ -167,7 +129,7 @@ async def test_a_bad_reply_backs_off_the_same_way(context, mode, label):
     await netspy.broadcast_wallet(page, ADDRESS_A)
     await settle(page, 1500)
 
-    window = await storage.get(context, storage.NOTIFICATION_CHECK)
+    window = await storage.await_key(context, storage.NOTIFICATION_CHECK)
     shown = await popup.wait_for_popup(page, timeout=3, route="notification")
     await page.close()
 
@@ -196,8 +158,8 @@ async def test_the_check_resumes_once_the_backoff_expires(context):
     await netspy.reset(context)
     await page.goto(NEUTRAL + "/?again", wait_until="domcontentloaded")
     await netspy.broadcast_wallet(page, ADDRESS_B)
-    await settle(page, 1500)
-    resumed = await netspy.count(context, netspy.NOTIFICATION_CHECK)
+    # Wait for the check itself rather than for a number of seconds.
+    resumed = await netspy.await_call(context, netspy.NOTIFICATION_CHECK)
     await page.close()
 
     assert resumed >= 1, \
@@ -205,11 +167,6 @@ async def test_the_check_resumes_once_the_backoff_expires(context):
 
 
 async def test_disconnecting_removes_the_address_and_reconnecting_is_quiet(context):
-    """3.1 — disconnect clears walletAddress; the same wallet back is not a change.
-
-    lastCheckedWalletAddress deliberately survives a disconnect, so reconnecting
-    the same wallet does not force a check — and no notification is lost.
-    """
     await netspy.install(context, netspy.PASS)
     page = await context.new_page()
     await page.goto(NEUTRAL, wait_until="domcontentloaded")
@@ -263,12 +220,6 @@ async def test_an_active_check_window_skips_the_server(context):
 # ── 3 the notification surface ──────────────────────────────────────
 
 async def test_a_notification_renders_correctly_when_there_is_one(context):
-    """3 — if the environment has a reward for us, the surface must be sound.
-
-    Skips rather than fails when there is nothing to show: on a fresh
-    environment there are no purchases, and "no notification" is the correct
-    answer, not a bug.
-    """
     await netspy.install(context, netspy.PASS)
     page = await context.new_page()
     await page.goto(NEUTRAL, wait_until="domcontentloaded")
@@ -297,12 +248,6 @@ async def test_a_notification_renders_correctly_when_there_is_one(context):
 
 @pytest.fixture
 def seeded(request, env_name):
-    """Rows in the environment that make the server answer with one variant.
-
-    Skips rather than fails when the database is out of reach: a laptop without
-    the bastion key should run everything else, not report five red tests about
-    its own configuration.
-    """
     from bring import db, seed as seeder
 
     if not db.configured():
@@ -378,12 +323,6 @@ SEED_CANNOT_REACH = {
 @pytest.mark.needs_db
 @pytest.mark.parametrize("variant", sorted(EXPECTED))
 async def test_notification_variant(context, seeded, variant):
-    """3 — each variant's own text and buttons.
-
-    The rows are written for the user id this browser is actually using, so the
-    server computes the variant for us rather than being told which one to
-    return — which is the only version of this test worth having.
-    """
     expected = EXPECTED[variant]
 
     if variant in SEED_CANNOT_REACH:
@@ -437,11 +376,6 @@ async def test_notification_variant(context, seeded, variant):
 
 @pytest.mark.needs_db
 async def test_small_amounts_round_to_three_decimals(context, seeded):
-    """3 — amounts between 0.01 and 0.1 show three decimals, not four.
-
-    0.0457 became 0.046. Larger amounts are unchanged, which is why this only
-    asserts on the small one.
-    """
     user_id = await storage.get(context, "id")
     assert user_id, "the extension has no user id to seed rows against"
     seeded("walletless_1", user_id, ADDRESS_A)
@@ -473,11 +407,6 @@ async def test_small_amounts_round_to_three_decimals(context, seeded):
 
 @pytest.mark.needs_db
 async def test_closing_the_notification_removes_it(context, seeded):
-    """3 — the X puts it away, and it does not come back on the next page.
-
-    The notification is stored so it survives a navigation; closing has to
-    erase that copy, or the user dismisses it and meets it again immediately.
-    """
     user_id = await storage.get(context, "id")
     assert user_id, "the extension has no user id to seed against"
     seeded("walletless_1", user_id, ADDRESS_A)
@@ -510,12 +439,6 @@ async def test_closing_the_notification_removes_it(context, seeded):
 
 @pytest.mark.needs_db
 async def test_stop_reminding_turns_the_reminders_off(context, seeded):
-    """3 — Stop Reminding sets the flag the reward check reads.
-
-    Only the flag is asserted, not months of silence: `disableReminders` is
-    what the server is told on every subsequent check, so writing it is the
-    whole of the client's part.
-    """
     user_id = await storage.get(context, "id")
     assert user_id, "the extension has no user id to seed against"
     seeded("walletless_4", user_id, ADDRESS_A)

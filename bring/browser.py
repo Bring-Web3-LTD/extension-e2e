@@ -1,11 +1,3 @@
-"""A Chrome with the extension loaded, and a handle on its service worker.
-
-Every test gets its own profile directory. The extension keeps its state in
-`chrome.storage.local`, which is per-profile and not per-page, so two tests
-sharing a browser would be writing over each other's quiet domains — and the
-one that ran second would report a missing popup for a product that is fine.
-A profile per test is also what makes running them in parallel safe.
-"""
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -48,10 +40,6 @@ LAUNCH_ARGS = [
 # list and a WebGL vendor of "Google Inc." are each on their own enough to earn
 # a challenge page.
 #
-# Run before any of the page's own code, so the page never sees the original
-# values. This is not about defeating a site's security — it is about a QA
-# browser being served the same shop a person is served, which is the only way
-# a check of the extension means anything.
 STEALTH = """
 (() => {
   // The flag Playwright cannot unset from the command line alone.
@@ -97,7 +85,6 @@ STEALTH = """
 
 def chromium_major() -> str:
     """The major version Playwright ships, so the user agent matches the binary.
-
     A user agent claiming a version the browser is not is its own tell.
     """
     try:
@@ -117,10 +104,6 @@ def chromium_major() -> str:
 
 def real_user_agent() -> str:
     """A user agent without the two words that give the game away.
-
-    Playwright's default contains `HeadlessChrome` even when headed, and
-    `--enable-automation` sets `navigator.webdriver`. Either one is enough for
-    a search engine to serve a bot check.
     """
     return ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             f"(KHTML, like Gecko) Chrome/{chromium_major()}.0.0.0 Safari/537.36")
@@ -129,16 +112,7 @@ def real_user_agent() -> str:
 @asynccontextmanager
 async def extension_browser(extension_dir: Path, profile_dir: Path, *,
                             headless: bool = False, trace: bool = True):
-    """Yield a BrowserContext with the extension installed.
-
-    :param headless: uses Chrome's new headless, which is the only one that
-        loads extensions at all. The old one silently ran without them, which
-        looks exactly like a product that stopped injecting.
-    :param trace: arm tracing without writing anything. The browser outlives a
-        single test, so each test records its own chunk and keeps it only if it
-        failed — one trace for a whole lane would be too large to open and
-        would name sixty tests at once.
-    """
+    """Yield a BrowserContext with the extension installed."""
     extension_dir = Path(extension_dir).resolve()
     profile_dir = Path(profile_dir).resolve()
     profile_dir.mkdir(parents=True, exist_ok=True)
@@ -186,12 +160,7 @@ async def extension_browser(extension_dir: Path, profile_dir: Path, *,
 
 
 async def wake_worker(context, timeout: float = 30):
-    """The extension's service worker, started if it was asleep.
-
-    An MV3 worker only runs while it has something to do, so waiting for a
-    registration event on a profile where the extension is already installed
-    waits forever. Loading a page is what actually starts one.
-    """
+    """The extension's service worker, started if it was asleep."""
     worker = current_worker(context)
     if worker:
         return worker

@@ -1,23 +1,5 @@
-"""The widget: a badge first, the offer when you click it.
-
-QA_TEST_PLAN section 7.1. A server-gated mode (`isWidgetEnabled`) where the
-retailer gets a small pulsing badge in the corner instead of the offer opening
-straight away. Click it and the badge zooms out while the offer scales up in
-its place.
-
-Worth its own file because the badge is a different surface with different
-rules, and one of them is easy to get backwards: the badge's own X is a
-*dismiss* — it closes the widget and reports `isWidget` on the analytics event
-— while the expanded offer's X behaves like any other close, silencing the
-retailer. Collapsing back to the badge is deliberately not a thing.
-
-Skips rather than fails when the environment has the widget off: a full popup
-is the other correct answer, and it is covered everywhere else.
-"""
 import pytest
-
 from bring import netspy, popup, storage
-
 pytestmark = pytest.mark.widget
 
 MINUTE = 60_000
@@ -79,7 +61,7 @@ async def test_the_expanded_offer_can_be_activated(page, context, widget_retaile
     assert await popup.click(frame, popup.OFFER["activate"], settle=6), \
         "the expanded widget has no activate button"
 
-    entry = await storage.quiet_entry(context, widget_retailer)
+    entry = await storage.await_quiet_entry(context, widget_retailer)
     assert entry, "activating from the widget wrote no quietDomains entry"
     assert entry.get("phase") == "activated", \
         f"expected phase 'activated', got {entry.get('phase')!r}"
@@ -109,18 +91,7 @@ async def test_the_expanded_offer_reaches_the_optout(page, widget_retailer):
 
 async def test_the_badge_dismiss_silences_the_retailer(page, context,
                                                       widget_retailer):
-    """7.1 — dismissing the badge is a close, and silences the shop for 30 min.
 
-    The badge's X and the expanded offer's X differ only in what they report:
-    the badge adds `isWidget: true` to its analytics (Widget.tsx). They share
-    the close itself — `Home.tsx` hands the widget the same `close` the offer
-    gets, and that sends ACTIONS.CLOSE with the domain and thirty minutes, which
-    the background turns straight into a quiet row with no widget branch of any
-    kind (handleContentMessages.ts, `case 'CLOSE'`).
-
-    So putting the badge away is a decision about the shop, not a decision to
-    tidy the screen — confirmed as intended.
-    """
     frame = await badge_on(page, widget_retailer)
 
     assert await popup.click(frame, popup.WIDGET["close"], settle=3), \
@@ -137,7 +108,7 @@ async def test_the_badge_dismiss_silences_the_retailer(page, context,
         f"{widget_retailer} offered again straight after the badge was dismissed"
 
     # Then the row that explains it, and its window.
-    entry = await storage.quiet_entry(context, widget_retailer)
+    entry = await storage.await_quiet_entry(context, widget_retailer)
     assert entry, (
         f"nothing came back, but quietDomains has no row for "
         f"{widget_retailer} to say why")
@@ -150,11 +121,6 @@ async def test_the_badge_dismiss_silences_the_retailer(page, context,
 
 
 async def test_the_expanded_offer_close_does_silence(page, context, widget_retailer):
-    """7.1 — and the expanded offer's X behaves like a standard close.
-
-    Half an hour of quiet, and no collapsing back to the badge — the
-    reversible-collapse path is deliberately not implemented.
-    """
     frame = await badge_on(page, widget_retailer)
     assert await popup.expand_widget(frame), "the widget would not open"
 
@@ -166,7 +132,7 @@ async def test_the_expanded_offer_close_does_silence(page, context, widget_retai
         "closing the expanded offer collapsed it back to the badge instead of " \
         "closing it"
 
-    entry = await storage.quiet_entry(context, widget_retailer)
+    entry = await storage.await_quiet_entry(context, widget_retailer)
     assert entry, "closing the expanded widget wrote no quietDomains entry"
     assert entry.get("phase") == "quiet", \
         f"expected phase 'quiet' after a close, got {entry.get('phase')!r}"
@@ -178,12 +144,6 @@ async def test_the_expanded_offer_close_does_silence(page, context, widget_retai
 
 
 async def test_the_expanded_state_survives_navigation(page, context, widget_retailer):
-    """7.1 — once expanded, it stays expanded while the user browses the site.
-
-    Remembered per platform in the iframe's sessionStorage, so moving to
-    another page of the same shop re-opens the offer rather than making the
-    user click the badge again.
-    """
     frame = await badge_on(page, widget_retailer)
     assert await popup.expand_widget(frame), "the widget would not open"
 
@@ -200,12 +160,6 @@ async def test_the_expanded_state_survives_navigation(page, context, widget_reta
 
 
 async def test_dismissing_the_badge_reports_it_as_the_widget(page, context, widget_retailer):
-    """7.1 — the dismiss is reported as the widget's own, not the popup's close.
-
-    `popup_close` with `isWidget` set. Getting this wrong does not break
-    anything a user sees, which is why it needs a test: it silently merges two
-    different user actions in the numbers.
-    """
     analytics = netspy.PageCalls()
     await analytics.watch(context, "**/analytics")
 

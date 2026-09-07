@@ -1,23 +1,3 @@
-"""Searching a retailer's name, which is how the offer bar is reached.
-
-The offer bar does not appear on a shop. It appears over a **search results
-page**, when what was typed matches a retailer's registered search terms — the
-backend's SEARCH_ENGINE_ENTITIES pins that to `google.com/search?q=` and
-`amazon.com/s?k=` (backend/utils/offerBar/config.ts).
-
-Two things make this the flakiest surface in the suite, and both are handled
-here rather than in the tests:
-
-A **consent gate.** Google hides its results behind one until the choice is
-stored, and every profile here starts empty. The cookie below is what "Accept
-all" writes; the button is the fallback, and its id is stable across languages
-while its label is not.
-
-A **bot check.** A search engine that decides we are a robot serves an
-interstitial instead of results. No offer bar can appear there and none should
-— reporting that as a failure accuses the product of something a third party
-did. So it is detected and reported as a reason to skip.
-"""
 import asyncio
 
 # What "Accept all" stores. Works regardless of the interface language, which
@@ -54,18 +34,6 @@ BOT_TITLES = ("unusual traffic", "before you continue", "are you a robot",
 
 
 def blocked_url(url: str) -> str:
-    """The bot-check marker in *url*, or ''.
-
-    A shop's anti-bot page is reached by navigating, and not only by the
-    navigations this suite makes: activating sends the tab through the
-    affiliate network, and what comes back can be the shop's challenge rather
-    than the shop — measured on AliExpress, which answers the hop with
-    `/_____tmd_____/punish?x5secdata=...`. The confirmation cannot appear on
-    that page, and no assertion about it means anything.
-
-    Kept next to the markers it uses rather than duplicated: the same list
-    decides whether a search reached results.
-    """
     lowered = (url or "").lower()
     for marker in BOT_MARKERS:
         if marker.lower() in lowered:
@@ -74,14 +42,7 @@ def blocked_url(url: str) -> str:
 
 
 def term_for(retailer_url: str) -> str:
-    """The brand name to search for, from the retailer's host.
 
-    The retailer's own name is the term most likely to be registered against
-    it. It can still be wrong — the backend decides which terms trigger a bar,
-    and a name that is not among them produces no bar for a perfectly healthy
-    product. The tests tell those apart by asking whether the server was
-    consulted at all, not by guessing.
-    """
     host = retailer_url.split("//")[-1].split("/")[0].lower()
     host = host.removeprefix("www.")
     return host.split(".")[0]
@@ -110,11 +71,6 @@ async def dismiss_consent(page, timeout_ms: int = 3000) -> bool:
 
 
 async def blocked(page) -> str:
-    """Why this is not a results page, or ''.
-
-    Matched on both the URL and the title, because the two engines announce it
-    differently and one of them redirects while the other does not.
-    """
     url = (page.url or "").lower()
     for marker in BOT_MARKERS:
         if marker in url:
@@ -130,12 +86,7 @@ async def blocked(page) -> str:
 
 
 async def search(page, term: str, engine: str = "google") -> str:
-    """Run the search. Returns '' on success, or why it could not be run.
 
-    A reason rather than an exception: "Google decided we are a robot" is not a
-    finding about the extension, and the test should skip with that sentence
-    rather than fail with a traceback.
-    """
     config = ENGINES.get(engine)
     if not config:
         return f"unknown search engine {engine!r}"

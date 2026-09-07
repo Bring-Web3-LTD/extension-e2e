@@ -1,13 +1,6 @@
-"""Opt-out: scope, duration, and the 60-day cap that is gone.
-
-QA_TEST_PLAN section 1.4, plus 7.6.
-"""
 import time
-
 import pytest
-
 from bring import popup, storage
-
 pytestmark = pytest.mark.popup
 
 DAY = 24 * 60 * 60 * 1000
@@ -58,7 +51,9 @@ async def test_nothing_happens_until_apply(on_retailer, context, retailer):
 
     assert not await storage.get(context, storage.OPT_OUT), \
         "the global opt-out was written before Apply was clicked"
-    assert not await storage.quiet_entry(context, retailer), \
+    # An absence, so this one spends its whole budget. A second and a half
+    # catches a premature write without being paid four times for nothing.
+    assert not await storage.await_quiet_entry(context, retailer, timeout=1.5), \
         "a quiet entry was written before Apply was clicked"
 
 
@@ -78,12 +73,6 @@ async def test_back_to_activation_returns_to_the_offer(on_retailer):
 async def test_optout_this_site_silences_for_the_time_chosen(on_retailer, context,
                                                              retailer, control,
                                                              duration):
-    """1.4 - a single-site opt-out lasts exactly as long as the button says.
-
-    Run for every duration, because the window is the whole point of the
-    screen: an opt-out that silently gives everyone 24 hours looks correct on
-    whichever single duration a one-case test happened to pick.
-    """
     page, frame = on_retailer
     assert frame, "no popup appeared"
     await open_optout(page, frame)
@@ -95,7 +84,7 @@ async def test_optout_this_site_silences_for_the_time_chosen(on_retailer, contex
     assert await popup.visible(frame, popup.OPTOUT["confirmation"]), \
         "Apply did not show the confirmation"
 
-    entry = await storage.quiet_entry(context, retailer)
+    entry = await storage.await_quiet_entry(context, retailer)
     assert entry, f"a single-site opt-out wrote nothing for {retailer}"
     assert not await storage.get(context, storage.OPT_OUT), \
         "a single-site opt-out set the global opt-out as well"
@@ -144,13 +133,7 @@ async def test_optout_all_sites_silences_everything(on_retailer, context,
 
 
 async def test_forever_optout_outlives_sixty_days(on_retailer, context, retailer):
-    """1.4 + 7.6 — the 60-day cap is gone; forever means forever.
 
-    The old SDK wiped any range longer than 60 days, so a 'forever' opt-out
-    quietly expired after two months. Moving the clock past that point is the
-    only way to see the difference, and the clock here is the stored range: the
-    end of a real 'forever' is far enough out that no wait would ever reach it.
-    """
     page, frame = on_retailer
     assert frame, "no popup appeared"
     await open_optout(page, frame)
@@ -159,7 +142,7 @@ async def test_forever_optout_outlives_sixty_days(on_retailer, context, retailer
     await popup.click(frame, popup.OPTOUT["forever"], settle=0.5)
     assert await popup.click(frame, popup.OPTOUT["apply"], settle=3)
 
-    entry = await storage.quiet_entry(context, retailer)
+    entry = await storage.await_quiet_entry(context, retailer)
     assert entry, "a forever opt-out wrote nothing"
 
     window = storage.window_ms(entry)
@@ -186,12 +169,6 @@ async def test_forever_optout_outlives_sixty_days(on_retailer, context, retailer
 
 
 async def test_expired_optout_is_cleared_lazily(context, retailer):
-    """1.4 — an expired opt-out stays saved until the next write, then goes.
-
-    Not an implementation detail: it is why a user who opted out and came back
-    a month later still sees the old row in storage, and why a test that clears
-    it on read would be testing a state the product never reaches.
-    """
     now = int(time.time() * 1000)
     await storage.set(context, storage.OPT_OUT, [now - 7200_000, now - 3600_000])
 

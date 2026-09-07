@@ -1,20 +1,6 @@
-"""Hijack protection: stand down when another affiliate already owns the click.
-
-QA_TEST_PLAN section 1.8. The SDK watches the whole navigation redirect chain
-— every 3xx hop — as well as the URL the browser lands on, and if any of them
-carries an affiliate attribution marker it stays silent and quiets the
-retailer's registrable domain.
-
-The nasty case is the middle one: the marker rides on a hop and is gone by the
-time the browser stops, so a clean-looking final URL proves nothing. Playwright
-answers with real 302s so `webRequest` sees genuine hops.
-"""
 import time
-
 import pytest
-
 from bring import pages, popup, retailers, storage
-
 pytestmark = pytest.mark.popup
 
 HOUR = 60 * 60 * 1000
@@ -26,15 +12,10 @@ MARKER_VALUE = "e2e-standdown-probe"
 
 
 async def already_silent(context, url) -> str:
-    """Why this retailer would be silent anyway, or ''.
 
-    Asked first, because a silenced retailer and a respected affiliate link
-    look identical from outside — and reporting the first as the second is how
-    a suite claims to test hijack protection while testing nothing.
-    """
     if await storage.get(context, storage.OPT_OUT):
         return "the user is opted out of every website"
-    entry = await storage.quiet_entry(context, url)
+    entry = await storage.await_quiet_entry(context, url)
     if entry:
         return f"already in quietDomains (phase {entry.get('phase')!r})"
     return ""
@@ -64,12 +45,6 @@ async def test_no_popup_on_an_affiliate_arrival(context, retailer, marker):
 
 
 async def test_no_popup_when_the_marker_is_only_on_a_hop(context, retailer):
-    """1.8 — the attribution is on an intermediate 3xx, not on the final URL.
-
-    This is the case the redirect-chain watch exists for. Before it, the
-    extension only looked at where the browser stopped, so an affiliate link
-    that redirected to a clean URL was hijacked every time.
-    """
     reason = await already_silent(context, retailer)
     if reason:
         pytest.skip(f"cannot tell silence from a stand-down — {reason}")
@@ -113,7 +88,7 @@ async def test_stand_down_quiets_the_whole_domain(context, retailer):
     if "irclickid" not in landed:
         pytest.skip("the marker was stripped before the extension saw it")
 
-    entry = await storage.quiet_entry(context, retailer)
+    entry = await storage.await_quiet_entry(context, retailer)
     assert entry, "a stand-down wrote no quietDomains entry"
     assert str(entry.get("domain", "")).startswith("*."), \
         f"a stand-down should quiet `*.<domain>`, got {entry.get('domain')!r}"
@@ -147,13 +122,6 @@ async def test_stand_down_quiets_the_whole_domain(context, retailer):
 
 
 async def test_stand_down_extends_but_never_shortens(context, retailer):
-    """1.8 — a longer existing silence survives a fresh stand-down.
-
-    The stand-down window is `now + standDownOffset`, two hours by default. If
-    the retailer is already quiet for longer, that must be kept: shortening it
-    would let the popup back in early on a retailer somebody deliberately
-    silenced for a month.
-    """
     reason = await already_silent(context, retailer)
     if reason:
         pytest.skip(f"cannot tell silence from a stand-down — {reason}")
@@ -182,11 +150,6 @@ async def test_stand_down_extends_but_never_shortens(context, retailer):
 
 
 async def test_a_clean_arrival_still_pops(context, retailer):
-    """1.8 — the guard must not swallow ordinary visits.
-
-    Stated as its own test because every assertion above passes trivially on an
-    extension that never pops at all.
-    """
     page = await context.new_page()
     await page.goto(retailer, wait_until="domcontentloaded")
     shown = await popup.wait_for_popup(page, timeout=30)

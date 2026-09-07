@@ -1,26 +1,4 @@
 #!/usr/bin/env python
-"""Every retailer, in step, in one browser.
-
-    python flow.py                 the whole walk
-    python flow.py --headless      without the windows
-    python flow.py --only popup    one act
-
-The suite next door runs one test at a time, which is thorough and nothing like
-a person. This walks the product the way a user meets it: four shops open at
-once in one browser, sharing one extension and one `quietDomains` list, and
-every tab takes the same step at the same moment.
-
-Lockstep is what makes that safe. Concurrency inside a browser normally means
-tests destroying each other — one tab opting out of all websites silences the
-others mid-assertion. Here nobody is mid-assertion: every tab activates
-together, every tab is checked together, the list is cleared for everyone
-together, and only then does the next step begin. Interference has nowhere to
-happen, and the shared list is exercised the way it actually lives.
-
-What that buys, beyond realism: a step that fails, fails visibly for some shops
-and not others, which is the difference between a product bug and a shop having
-a bad day. A serial run cannot show you that.
-"""
 import argparse
 import asyncio
 import os
@@ -278,14 +256,6 @@ async def apply_optout(site, tab, walk):
 
 
 async def arrive_with_affiliate_marker(site, tab, walk):
-    """Arrive carrying somebody else's attribution, and stay out of the way.
-
-    Judged on the server's verdict as well as the screen. The QA plan puts it
-    exactly that way — the popup check comes back `isValid = false` — and a
-    frame that happens to be absent is much weaker evidence: a slow page, a
-    leftover from the previous step, or a shop that redirected can all produce
-    "no popup" without the stand-down having done anything.
-    """
     await netspy.install(walk.context, netspy.PASS)
     await netspy.reset(walk.context)
 
@@ -324,12 +294,6 @@ async def arrive_with_affiliate_marker(site, tab, walk):
 
 
 async def navigate_and_expect_popup(site, tab, walk, mode):
-    """Back, forward or refresh, on a shop that was never silenced.
-
-    The popup has to come back: these are re-checks, not cache hits. Without
-    this the sibling step below passes on an extension that stopped reacting to
-    navigation altogether.
-    """
     control = next((s for s in walk.sites if s != site), site)
     if mode == "reload":
         await tab.reload(wait_until="domcontentloaded")
@@ -362,6 +326,93 @@ async def navigate_and_expect_silence(site, tab, walk, mode):
     if frame:
         return Result.failed(f"after {mode} the offer came back on a silenced shop")
     return Result.passed(f"{mode} kept it silent")
+
+
+# ── the offer, in detail ────────────────────────────────────────────
+# What the suite used to check one shop at a time, asked of all four at once.
+# The saving is not the assertion — it is the arrival: one navigation answers
+# several questions instead of one each.
+
+async def check_deal_terms(site, tab):
+    """7.2 — the terms open over the offer and Back returns to it."""
+    frames = popup.frames(tab)
+    if not frames:
+        return Result.failed("the popup is gone")
+    frame = frames[0]
+
+    if not await popup.click(frame, popup.OFFER["terms_link"], settle=1.5):
+        return Result.failed("could not click 'Deal Terms'")
+    if not await popup.visible(frame, popup.OFFER["terms_box"]):
+        return Result.failed("the terms view did not open")
+
+    body = await popup.text(frame, popup.OFFER["terms_box"])
+    if not body.strip():
+        return Result.failed("the terms view opened empty")
+    if "undefined" in body or "NaN" in body:
+        return Result.failed(f"unresolved rate in the terms: {body[:60]!r}")
+
+    if not await popup.click(frame, popup.OFFER["terms_back"], settle=1.5):
+        return Result.failed("the terms view has no Back button")
+    if not await popup.visible(frame, popup.OFFER["activate"]):
+        return Result.failed("Back did not return to the offer")
+    return Result.passed("terms open and Back returns")
+
+
+async def check_one_popup_only(site, tab):
+    """1.12 — one offer per page, however many frames the shop carries."""
+    frames = [f for f in popup.frames(tab) if await popup.rendered(f)]
+    if not frames:
+        return Result.failed("no popup at all")
+    if len(frames) > 1:
+        routes = [popup.route_of(f) for f in frames]
+        return Result.failed(f"{len(frames)} popups on one page: {routes}")
+    return Result.passed("exactly one")
+
+
+async def check_silence_is_scoped(site, tab, walk):
+    rows = await storage.quiet_domains(walk.context)
+    mine = storage.entry_for(rows, site)
+    if not mine:
+        return Result.failed("closing wrote no row for this shop")
+
+    missing = [s for s in walk.sites
+               if not storage.entry_for(rows, s)]
+    if missing:
+        names = ", ".join(retailers.label(s) for s in missing)
+        return Result.failed(f"but {names} lost their row — the silence spread")
+    return Result.passed(f"{mine.get('domain')!r}, and the others untouched")
+
+
+async def check_silence_expires(site, tab, walk):
+    if not await storage.expire_quiet(walk.context, site):
+        return Result.failed("no quiet row to expire")
+
+    await tab.goto(site, wait_until="domcontentloaded")
+    frame = await popup.wait_for_offer(tab, timeout=35)
+    if not frame:
+        return Result.failed("the window expired but the offer did not return")
+    return Result.passed("the offer returns once the window ends")
+
+
+async def check_expired_row_hides_nothing(site, tab, walk):
+    # `*.host`, which is the shape the SDK itself writes. A bare host does not
+    # match `www.<host>` the way the reverse-string matching works, so a row
+    # written without the wildcard silences nothing and the test measures its
+    # own mistake.
+    host = f"*.{storage.normalise(site)}"
+    now = int(time.time() * 1000)
+    await storage.set(walk.context, storage.QUIET_DOMAINS, [
+        {"domain": host, "type": "kds", "phase": "quiet", "isRegex": False,
+         "time": [now - 4 * HOUR, now - 2 * HOUR]},          # long dead
+        {"domain": host, "type": "kds", "phase": "quiet", "isRegex": False,
+         "time": [now, now + 30 * MINUTE]},                  # live
+    ])
+
+    await tab.goto(site, wait_until="domcontentloaded")
+    frame = await popup.wait_for_popup(tab, timeout=12)
+    if frame:
+        return Result.failed("the expired row hid the live one and the offer showed")
+    return Result.passed("the live row still silences")
 
 
 # ── the acts ────────────────────────────────────────────────────────
@@ -407,6 +458,28 @@ async def act_popup(walk):
 
     await walk.step("arriving on an affiliate link stands down",
                     lambda s, t: arrive_with_affiliate_marker(s, t, walk))
+    await walk.clear()
+
+
+async def act_offer_detail(walk):
+    """Everything the suite asked about the offer and its silence."""
+    print("\n" + "=" * 64)
+    print("ACT 1b - the offer in detail, on every shop at once")
+    print("=" * 64)
+
+    await walk.step("the offer appears", visit_and_open)
+    await walk.step("only one popup per page", check_one_popup_only)
+    await walk.step("Deal Terms opens and Back returns", check_deal_terms)
+
+    await walk.step("close it", close_popup)
+    await walk.step("the silence names this shop and no other",
+                    lambda s, t: check_silence_is_scoped(s, t, walk))
+    await walk.step("and the offer returns when the window ends",
+                    lambda s, t: check_silence_expires(s, t, walk))
+    await walk.clear()
+
+    await walk.step("an expired row does not hide a live one",
+                    lambda s, t: check_expired_row_hides_nothing(s, t, walk))
     await walk.clear()
 
 
@@ -512,14 +585,6 @@ async def act_widget(context, headless):
 
 
 async def act_offerbar(context, keyword):
-    """The bar over search results, given the same treatment as the popup.
-
-    Whether it arrives as an offer bar or a top bar is the server's choice and
-    the same surface either way — the checks below are the bar's, not the
-    layout's. They share no ids, though (`#tb-*` against `#offerbar-*`), so each
-    round asks the frame which set it rendered rather than assuming one.
-    Reached only by searching: nobody visits a shop to see it.
-    """
     print("\n" + "=" * 64)
     print(f"ACT 3 - the bar, searching {keyword!r} on Google")
     print("=" * 64)
@@ -533,11 +598,6 @@ async def act_offerbar(context, keyword):
             failures += 1
 
     async def fresh_bar():
-        """A results page with the bar on it: (tab, frame, ctl, why).
-
-        `ctl` is the selector set the bar that actually arrived uses, and is
-        None whenever `frame` is.
-        """
         await storage.delete(context, storage.QUIET_DOMAINS)
         await netspy.install(context, netspy.PASS)
         await netspy.reset(context)
@@ -555,12 +615,6 @@ async def act_offerbar(context, keyword):
                                  f"(the term is not registered here)")
 
     async def bar_returns(tab):
-        """Search the same term again; True if a bar came back.
-
-        Asked before any stored row is read. The row is the reason for the
-        silence, not the silence itself — a plausible-looking entry with the bar
-        still appearing on the next search is the failure that matters.
-        """
         reason = await search.search(tab, keyword, engine="google")
         if reason:
             return None
@@ -770,14 +824,6 @@ async def act_notifications(context):
 
 
 async def act_notification_variants(context):
-    """The five screens, each produced by putting rows where the server looks.
-
-    Not a client-side switch: the server computes which variant to send from
-    `purchases`, signs it into a token, and the iframe only reads it. So the
-    only honest way to see all five is to write the rows and let it decide —
-    which also means this act needs the environment's database, and says so
-    plainly when it cannot reach one.
-    """
     print("\n" + "=" * 64)
     print("ACT 5 - the five notification variants")
     print("=" * 64)
@@ -901,11 +947,14 @@ async def run(only, headless):
     async with extension_browser(extension, profile, headless=headless) as context:
         await storage.settled(context)
 
-        if only in (None, "popup"):
+        if only in (None, "popup", "detail"):
             walk = Walk(context, sites)
             await walk.open_tabs()
             try:
-                await act_popup(walk)
+                if only != "detail":
+                    await act_popup(walk)
+                if only != "popup":
+                    await act_offer_detail(walk)
             finally:
                 await walk.close_tabs()
             failures += walk.failures
@@ -932,7 +981,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--headless", action="store_true")
-    parser.add_argument("--only", choices=["popup", "widget", "offerbar",
+    parser.add_argument("--only", choices=["popup", "detail", "widget", "offerbar",
                                            "notification"], default=None)
     args = parser.parse_args()
     return asyncio.run(run(args.only, args.headless))

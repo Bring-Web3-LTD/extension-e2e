@@ -1,18 +1,4 @@
-"""Read and write the extension's saved state, from outside the extension.
-
-The SDK exposes `bringCache` on its service worker (utils/storage/storage.ts,
-`initializeDebugCache`), which is the same door its own debug tooling uses.
-Writes go through it rather than straight to `chrome.storage.local`, because
-the SDK reads most values from an in-memory cache first — a raw storage write
-lands in the browser but not in the extension, and the test then asserts
-against a value the product never saw.
-
-The write side is what makes the time-gated half of the QA plan testable at
-all. A close silences a retailer for 30 minutes, an opt-out can be forever, a
-failed reward check backs off an hour, and a stand-down lasts two. No suite can
-sit through those. The expiry is a timestamp, so moving the timestamp into the
-past and reloading exercises exactly the code an hour of waiting would.
-"""
+import asyncio
 import json
 import time
 
@@ -70,12 +56,6 @@ async def delete(context, key: str) -> None:
 
 
 async def dump(context) -> dict:
-    """Every `bring_` value in this profile, unprefixed.
-
-    Read straight from chrome.storage rather than through the cache, because
-    this is the evidence attached to a failure: what is actually on disk, keys
-    the cache never loaded included.
-    """
     raw = await _call(context, "chrome.storage.local.get(null)") or {}
     return {k[len(PREFIX):]: v for k, v in raw.items() if k.startswith(PREFIX)}
 
@@ -85,24 +65,6 @@ WARMUP_URL = "https://example.com/"
 
 
 async def settled(context, timeout: float = 45) -> bool:
-    """Wait until the extension is actually ready to be tested.
-
-    Two things have to have happened, and both bite on a fresh profile.
-
-    The migration has to have finished. It *writes* `quietDomains`, so a test
-    that seeds storage the instant the worker wakes has its rows overwritten a
-    moment later and fails on a state nobody put there — a race decided by
-    milliseconds, which shows up as a random flake.
-
-    And the retailer list has to be there. The SDK downloads it lazily, on the
-    first navigation that asks for it, so the very first retailer a fresh
-    profile visits is matched against nothing and no popup check is ever sent.
-    That is not subtle in its effects: it reported all five shops as "never
-    matched the retailer list", including one we had already watched work.
-    A neutral page pays for the download without touching a retailer.
-    """
-    import asyncio
-
     deadline = asyncio.get_event_loop().time() + timeout
     warmed = False
 
@@ -130,14 +92,6 @@ async def settled(context, timeout: float = 45) -> bool:
 
 
 async def forget(context, url: str) -> bool:
-    """Drop just this retailer's rows, leaving everyone else's alone.
-
-    Deleting the whole list is the blunt version, and it is wrong in the middle
-    of a test: the extension writes quietDomains from its own navigations —
-    a control tab loading, a follow-up firing — and a wholesale delete throws
-    those away too. Between tests the difference does not matter; inside one it
-    is the difference between a clean slate and a lost write.
-    """
     rows = await quiet_domains(context)
     keep = [r for r in rows if not (isinstance(r, dict) and entries_for([r], url))]
     if len(keep) == len(rows):
@@ -147,17 +101,6 @@ async def forget(context, url: str) -> bool:
 
 
 async def reset(context) -> None:
-    """Forget every silence this run has written.
-
-    Close, activate and opt-out each silence the retailer, so a later step on
-    the same retailer would find no popup — which is correct behaviour and
-    still a useless test. Clearing the two keys that hold it is the same reset
-    as throwing the profile away, without the browser restart.
-
-    Safe to do wholesale *between* tests, which is the only place it is called:
-    nothing is navigating then, and the next test wants a clean slate anyway.
-    Inside a test, use `forget` — see the note there.
-    """
     for key in (QUIET_DOMAINS, OPT_OUT):
         await delete(context, key)
 
@@ -171,14 +114,6 @@ def normalise(host_or_url: str) -> str:
 
 
 def entries_for(entries, url: str) -> list:
-    """Every quietDomains row covering *url*.
-
-    One retailer can hold several: the list is keyed by (domain, type), so a
-    row the user wrote and a row the server wrote coexist. The backend stores
-    subdomain-inclusive retailers as `*.domain`, so a row written for
-    `*.aliexpress.com` has to match a visit to `www.aliexpress.com` — without
-    stripping the wildcard, a row that exists reads as nothing written.
-    """
     host = normalise(url)
     if not host:
         return []
@@ -225,6 +160,46 @@ async def quiet_entry(context, url: str, type_prefix: str = None):
     return entry_for(await quiet_domains(context), url, type_prefix)
 
 
+async def await_key(context, key: str, timeout: float = 8):
+    """A saved value, once the extension has actually written it.
+
+    The same race as `await_quiet_entry`, one level up. A wallet broadcast does
+    not write `notificationCheck`: it starts a check, which fails or answers,
+    and only then is the window stored. Sleeping a flat two or four seconds and
+    reading is a guess about how long that takes — too short and the test reads
+    None and calls it a defect, too long and every run pays for the worst case.
+
+    Returns as soon as the key has a value, so a quick write costs nothing.
+    """
+    deadline = time.time() + timeout
+    while True:
+        value = await get(context, key)
+        if value not in (None, "", [], {}) or time.time() >= deadline:
+            return value
+        await asyncio.sleep(0.2)
+
+
+async def await_quiet_entry(context, url: str, timeout: float = 4,
+                            type_prefix: str = None):
+    """The shop's quiet row, once the extension has actually written it.
+
+    Closing a popup does not write the row: it sends CLOSE to the background,
+    which writes it a moment later. Reading the list straight after the click
+    is a race the test loses often enough to look like a defect — measured, it
+    failed five checks a run with the row appearing milliseconds afterwards.
+
+    Returns as soon as the row exists, so the wait costs nothing when the write
+    was quick. Returns None after *timeout* for callers asserting an absence,
+    which is the one case that spends the whole budget.
+    """
+    deadline = time.time() + timeout
+    while True:
+        entry = entry_for(await quiet_domains(context), url, type_prefix)
+        if entry or time.time() >= deadline:
+            return entry
+        await asyncio.sleep(0.2)
+
+
 # ── moving the clock ────────────────────────────────────────────────
 
 def past(span=None):
@@ -234,15 +209,6 @@ def past(span=None):
 
 
 async def expire_quiet(context, url: str) -> bool:
-    """Push every row for *url* into the past, and report whether any moved.
-
-    This is how "revisit once the silence runs out" is tested without waiting
-    out the silence. Note what it deliberately does not do: it leaves the rows
-    in place rather than deleting them, because the SDK prunes quietDomains
-    only on the next *write* — so an expired row sitting there is the state the
-    product is actually in, and section 1.9's "an expired entry must not shadow
-    a valid one" only means anything against it.
-    """
     rows = await quiet_domains(context)
     moved = False
     for entry in rows:

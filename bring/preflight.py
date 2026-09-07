@@ -1,16 +1,3 @@
-"""Check the targets before the suite spends twenty minutes on them.
-
-A retailer is only a valid target while the environment under test actually
-carries it. When it does not, every popup assertion fails with "no popup" — and
-that is the correct product behaviour being reported as a bug. The QA framework
-learned this the expensive way: `lego.com` sat in its smoke list for months
-testing a retailer with no local offer, and every run blamed the extension.
-
-The cheap, exact test is the extension's own: navigate, and see whether it sent
-a `/check/popup` at all. No call means the URL never matched the retailer list,
-which is a fact about the target and the environment — not about the popup. One
-browser, a few seconds per retailer, and a config error instead of a wall of red.
-"""
 import tempfile
 from pathlib import Path
 

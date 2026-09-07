@@ -1,31 +1,3 @@
-"""Rows that make the environment produce each notification variant.
-
-The five variants in QA_TEST_PLAN section 3 are not five screens the client can
-be asked for. They are five different answers the server computes from rows in
-`purchases`, signs into a token, and hands over — so the only honest way to see
-them is to put the rows there and let the server do its own arithmetic.
-
-What the server actually does (backend notification/db-operations.ts), reduced
-to what has to be true for each variant:
-
-    a purchase counts as `new`       reportedPurchaseStatus IS NULL
-                                     AND status <> 'CORRECTED'
-                                     AND internalViewOnly <> 1
-    it counts as `eligible`          status = 'READY'
-    it counts toward `total`         any row matched to the user
-    `expiredAt` appears              a READY row's approvalTime is inside the
-                                     122-day reminding period, and no wallet
-    `promptPairing` is true          no wallet, and there is a `new` row
-
-Rows are matched to a person through `retailerClicks`, not through `purchases`
-— the join is `purchases.clickId -> retailerClicks.id`, and it is the click
-that carries `walletAddress` and `platformId`. For a user with no wallet the
-backend writes the *user id* into that column, prefixed. So seeding a variant
-means one click plus one or two purchases against it.
-
-Everything written here is tagged, and `clean` removes exactly what was
-written. Writes refuse any database whose name looks like production.
-"""
 import os
 import uuid
 from datetime import datetime, timedelta
@@ -210,11 +182,6 @@ def clean(seeded: dict) -> None:
 
 
 def clean_all(database: str) -> int:
-    """Remove every row this module has ever written to *database*.
-
-    For the run that crashed before its cleanup, so the next one does not
-    inherit rewards it did not create.
-    """
     db.refuse_if_production(database)
     removed = db.execute(
         "DELETE p FROM purchases p JOIN retailerClicks rc ON p.clickId = rc.id "

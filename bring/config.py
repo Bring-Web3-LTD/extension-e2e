@@ -1,8 +1,3 @@
-"""Everything the run needs to find AWS, the environment and the extension.
-
-The ARNs are the same ones the QA automation deploys with — this tool talks to
-the existing dev-env-deployer rather than standing up infrastructure of its own.
-"""
 import os
 from pathlib import Path
 
@@ -66,11 +61,6 @@ HTTP_TIMEOUT = 15
 
 
 def api_key(platform: str = PLATFORM) -> str:
-    """The platform key, sent to the deployer as FRONTEND_IDENTIFIER.
-
-    Read here rather than at the deploy call so a missing key fails in a
-    sentence instead of fifteen minutes into a Fargate task.
-    """
     return os.getenv(f"{platform.upper()}_API_KEY", "")
 
 
@@ -98,16 +88,6 @@ def stack_name(raw: str) -> str:
     return f"{deployer_env_name(raw)}-stack"
 
 
-# The wallets these tests use, for the platform under test.
-#
-# Not invented, and not the one baked into the mock extension either: that is a
-# Cardano address (`addr1...`), and this suite runs against ecko, whose
-# addresses are Kadena public keys (`k:...`). An address from the wrong chain is
-# not a cosmetic mismatch — a purchase row seeded against it is a row the server
-# will never match to the wallet the extension reports, so the notification
-# under test is correctly never shown and the test blames the product for it.
-#
-# Both are overridable, because the platform decides the shape.
 WALLET = os.getenv("BRING_WALLET", "k:7dcf6f1f2c8f4a02d4b29eb2ae34e41718137f1e8d28157779de09ac57754d6b")
 
 # A second one, used only to prove that switching accounts changes what the

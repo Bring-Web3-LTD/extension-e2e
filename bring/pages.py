@@ -1,20 +1,3 @@
-"""Controlled pages served on a real retailer's own URL.
-
-Some of the QA plan cannot be produced by visiting a shop and hoping. A site
-that rebuilds its DOM after hydration and deletes our popup (1.11), a page
-carrying a captcha or ad frame that used to answer the injection request before
-the top frame did (1.12), a link that reaches the retailer through an affiliate
-redirect hop (1.8) — none of these are on demand at a real retailer, and two of
-them only ever appear on some retailers on some days.
-
-So the navigation stays real and the DOM does not: Playwright fulfils the
-request for the retailer's own URL with markup we wrote. The extension still
-sees a real navigation to a real retailer domain, still matches it against the
-retailer list, and still runs webRequest and webNavigation over it — which is
-the part under test — while the page itself is whatever the case needs.
-
-Anything asserting on the retailer's *real* content must not use these.
-"""
 import asyncio
 import json
 import re
@@ -30,13 +13,6 @@ def plain(title: str = "Test retailer") -> str:
 
 
 def hydration_wipe(delay_ms: int = 1200) -> str:
-    """A page that replaces its whole body after load, taking our popup with it.
-
-    This is what React and Remix hosts do when they hydrate, and it is the exact
-    behaviour section 1.11's self-heal exists for: the popup appears, the host
-    wipes it, and the extension must put it back — at most three times, and only
-    until about two seconds after load, so it cannot turn into a flicker loop.
-    """
     return f"""<!doctype html><html><head><title>Hydrating retailer</title>
 <style>{BASE_STYLE}</style></head>
 <body><h1>Hydrating retailer</h1><p id="content">Server markup.</p>
@@ -57,11 +33,6 @@ def hydration_wipe(delay_ms: int = 1200) -> str:
 
 
 def with_same_origin_frame() -> str:
-    """A retailer page that embeds its own pages in an iframe.
-
-    The content script runs in every frame, so before the top-frame fix this
-    shape produced more than one popup, or one behind another.
-    """
     return f"""<!doctype html><html><head><title>Framed retailer</title>
 <style>{BASE_STYLE}</style></head>
 <body><h1>Framed retailer</h1>
@@ -70,13 +41,6 @@ def with_same_origin_frame() -> str:
 
 
 def with_third_party_frame() -> str:
-    """A retailer page carrying a cross-origin widget frame.
-
-    Stands in for hCaptcha, reCAPTCHA, ad and chat frames. The regression this
-    guards is the opposite of the one above: a third-party frame answering the
-    injection request first, and the top frame then never getting the popup at
-    all. So the expected result here is that the popup *does* appear.
-    """
     return f"""<!doctype html><html><head><title>Retailer with widget</title>
 <style>{BASE_STYLE}</style></head>
 <body><h1>Retailer with widget</h1>
@@ -85,11 +49,6 @@ def with_third_party_frame() -> str:
 
 
 def spa(routes: int = 2) -> str:
-    """A page that changes route without reloading, via history.pushState.
-
-    Section 1.6: on an in-app route change the old popup must close before a new
-    one shows, and there must never be two.
-    """
     return f"""<!doctype html><html><head><title>SPA retailer</title>
 <style>{BASE_STYLE}</style></head>
 <body><h1>SPA retailer</h1><p id="content">Route 0</p>
@@ -107,11 +66,6 @@ INNER = f"""<!doctype html><html><head><title>Inner</title>
 
 
 async def serve(target, url_glob: str, html: str, *, status: int = 200):
-    """Answer every request matching *url_glob* with *html*.
-
-    :param target: a Page or a BrowserContext. Context-wide when the case
-        involves more than one tab.
-    """
     async def handler(route):
         await route.fulfill(status=status, content_type="text/html; charset=utf-8",
                             body=html)
@@ -120,11 +74,6 @@ async def serve(target, url_glob: str, html: str, *, status: int = 200):
 
 
 async def serve_site(target, origin: str, pages: dict, default: str):
-    """Serve a small site: exact paths from *pages*, everything else *default*.
-
-    Lets one route cover a page and the frames or routes it pulls in, which is
-    what the same-origin-frame and SPA cases need.
-    """
     async def handler(route):
         path = route.request.url[len(origin):].split("?")[0] or "/"
         body = pages.get(path, default)
@@ -135,49 +84,12 @@ async def serve_site(target, origin: str, pages: dict, default: str):
 
 
 def exactly(url: str):
-    """Match one URL and nothing else, query string included.
-
-    A route registered with a plain string is a *glob*, where `?` matches any
-    single character rather than starting a query — and a URL carrying one is
-    then not matched by the very string it was built from. Verified: a route on
-    `https://x/hop?irclickid=abc` never fires for that exact URL, while the same
-    URL as a regex does.
-
-    That failure is silent and looks like the product's. The affiliate marker in
-    section 1.8 lives in a query string by definition, so the hop meant to carry
-    it was never intercepted, the browser stopped on a real 404, and the test
-    reported that the extension had ignored a redirect nobody ever sent it.
-    """
+    """Match one URL and nothing else, query string included."""
     return re.compile(r"^" + re.escape(url) + r"$")
 
 
 async def redirect_through(target, entry_url: str, hop_url: str,
                            final_url: str):
-    """Arrive at *final_url* through a real 3xx on *hop_url*, marker and all.
-
-    Section 1.8's case is an affiliate parameter that exists only on an
-    intermediate hop: the URL the browser ends up at is clean, so an extension
-    that looks solely at where it stopped hijacks a click somebody else already
-    owns. Reproducing it needs a genuine 3xx, because that is what
-    `webRequest.onBeforeRedirect` reports and what the SDK's redirect chain is
-    built from — markup that sets `location` produces no redirect at all and the
-    chain stays empty.
-
-    The shape is forced by Playwright. A request produced by a fulfilled
-    redirect is **not** matched against routes again: it goes straight to the
-    network. So the obvious chain — fulfil the entry with a 302 to the hop, then
-    fulfil the hop with a 302 onward — stops dead at the hop, because the hop's
-    route never runs. Measured, not assumed: the hop request is made and no
-    handler fires for it.
-
-    So the entry is answered with markup that *navigates* to the hop, which
-    makes the hop a fresh top-level request and therefore interceptable, and the
-    hop is answered with the 302. Its target is left to the real site, since
-    intercepting it is exactly what cannot be done — which is no loss: landing
-    on the shop's own page is the case under test.
-
-    One hop, for the same reason: a second would be a redirect target.
-    """
     async def enter(route):
         await route.fulfill(
             status=200, content_type="text/html; charset=utf-8",

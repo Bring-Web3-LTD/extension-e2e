@@ -1,16 +1,3 @@
-# The button you press before publishing.
-#
-#   GitHub -> Actions -> "Release check" -> Run workflow
-#
-# Brings up a temporary environment from the branches you name, loads the
-# extension that environment built, and runs everything against it. Nothing
-# here runs on its own: no push trigger, no schedule. It is a decision, and
-# somebody makes it.
-#
-# About half an hour. You do not have to watch it — the summary at the top of
-# the run says PASS or exactly what broke, and the screenshots, traces and
-# storage dumps for every failure are attached to the run.
-
 name: Release check
 
 on:

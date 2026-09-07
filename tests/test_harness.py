@@ -1,19 +1,5 @@
-"""The harness checking itself.
-
-Two tests, and they are not ceremony. The lane fixture keeps one browser for a
-whole retailer and clears only what the last test wrote — if that reset ever
-stops running, dozens of tests start failing on a silenced retailer and every
-message blames the product. If the browser stops being reused, the suite goes
-back to testing a first-ever install over and over. Both failures are
-expensive to diagnose from the tests they break, and cheap to catch here.
-
-Not parametrised by retailer: this is about the harness, and asking it four
-times says nothing more.
-"""
 import time
-
 from bring import storage
-
 LEAK_MARKER = "harness-leak-check.example"
 _lanes = []
 

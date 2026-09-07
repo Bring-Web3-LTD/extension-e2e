@@ -1,16 +1,3 @@
-"""Finding the extension's iframe on a page, and driving what is inside it.
-
-Everything the user can touch lives in one iframe the content script injects.
-It carries a stable id — `bringweb3-iframe-<extensionId>` (SDK constants.ts) —
-and the app inside it is a small router: `/` is the offer, `/activated` the
-confirmation, `/offerbar` the bar, `/notification` the reward, `/framed` the
-framed variant. Which route is loaded is the surface under test, so it is read
-off the frame URL rather than guessed from what happens to be on screen.
-
-Selectors are the ids the iframe app already ships. They are not test hooks
-added for this suite, which cuts both ways: they are stable across redesigns of
-the styling, and a renamed id is a real break worth failing on.
-"""
 import asyncio
 
 IFRAME_ID_PREFIX = "bringweb3-iframe"
@@ -301,19 +288,6 @@ async def wait_for_offer(page, timeout: float = 30):
 
 
 async def wait_for_confirmation(page, timeout: float = 60):
-    """The activated confirmation, after the redirect that activation triggers.
-
-    Activating does not leave the tab where it was. The SDK sends it through
-    the affiliate network — measured: `redirect.viglink.com/?...&u=<retailer>`
-    — which then bounces back to the shop, and the confirmation is injected on
-    what lands. A test that starts looking the moment the button is clicked is
-    watching a tab that is busy navigating, and thirty seconds is not always
-    enough for the hop.
-
-    So the navigation is allowed to settle first, and the wait afterwards is
-    generous. The activation itself is already provable from `quietDomains`;
-    this is only about catching the screen it produces.
-    """
     for state in ("domcontentloaded", "load"):
         try:
             await page.wait_for_load_state(state, timeout=20_000)
@@ -323,19 +297,6 @@ async def wait_for_confirmation(page, timeout: float = 60):
     return await wait_for_popup(page, timeout=timeout, route="activated")
 
 
-#: How long to wait before concluding that nothing is going to appear.
-#:
-#: Waiting for something to *arrive* is free — the poll returns the moment it
-#: does, so a generous timeout costs nothing when it passes. Waiting to prove
-#: an absence is the opposite: every second of it is spent, every time. A third
-#: of this suite does that, and at twelve to thirty seconds apiece it was
-#: thirty-four minutes of the eighty-six.
-#:
-#: Eight seconds is not a guess at what feels safe. A popup that is coming
-#: needs one server round-trip and one inject, and across a full run every
-#: popup that appeared was on screen within four. Eight is double that, which
-#: leaves the assertion honest: a popup this suite calls absent had twice the
-#: time it has ever needed.
 ABSENT = 8
 
 #: The two layouts the server can answer a search with. Both are "the bar".
@@ -349,12 +310,7 @@ def bars(page) -> list:
 
 
 async def controls_for(frame):
-    """The selector set this bar actually uses, by looking at what it rendered.
 
-    Asking the frame rather than trusting the route: the two layouts are the
-    same feature and a test should not care which arrived, but they share no
-    ids, so something has to decide.
-    """
     if await visible(frame, TOPBAR["container"]):
         return TOPBAR
     return OFFERBAR
@@ -392,26 +348,14 @@ async def wait_for_gone(page, timeout: float = 10, route: str = None) -> bool:
 
 
 async def iframe_src(page) -> str:
-    """The injected iframe's `src`, exactly as the content script built it.
 
-    Section 1.10 is entirely about this string: which params the server set,
-    which the client filled in, and that the token rides in the fragment rather
-    than the query.
-    """
     element = await page.query_selector(f'iframe[id^="{IFRAME_ID_PREFIX}-"]')
     return await element.get_attribute("src") if element else ""
 
 
 async def click(frame, selector: str, *, settle: float = 1.5,
                 force: bool = False) -> bool:
-    """Click something inside the frame; False when it is not there to click.
 
-    :param force: skip Playwright's stability check. Needed for anything that
-        animates continuously — the widget badge pulses by design, so the
-        default check waits for it to stop moving and it never does. Visibility
-        is still asserted above, so this does not click a hidden element; it
-        only stops waiting for a permanent animation to end.
-    """
     element = await frame.query_selector(selector)
     if not element or not await element.is_visible():
         return False
@@ -428,27 +372,13 @@ async def click(frame, selector: str, *, settle: float = 1.5,
 
 
 async def _settled_after_click(frame, budget: float):
-    """Wait until the click has visibly done something, or *budget* runs out.
 
-    A flat sleep here was the single most expensive habit in the suite: fifty
-    eight call sites, several of them six or eight seconds, spent in full on
-    every run whether or not the click had already finished. The long ones are
-    after activate, where the tab is sent through the affiliate network — real
-    waiting, but usually far less than the worst case they were sized for.
-
-    What a click actually does is observable, so it is observed:
-
-      * the frame goes away — a close, or a surface replaced
-      * the frame's route changes — the offer becoming the confirmation
-      * the page navigates — activate handing the tab to the affiliate hop
-      * the frame's content changes — opt-out opening, which keeps both urls
-
-    Any of those and the wait ends after a short grace for the render. None of
-    them and it waits the whole budget exactly as before, so a click this
-    cannot read is no worse off than it was.
-    """
     deadline = asyncio.get_event_loop().time() + budget
-    grace = 0.25
+    GRACE_VISIBLE = 0.25
+    GRACE_DETACHED = 1.5
+
+    async def remaining():
+        return max(0.0, deadline - asyncio.get_event_loop().time())
 
     async def snapshot():
         try:
@@ -460,19 +390,20 @@ async def _settled_after_click(frame, budget: float):
 
     start = await snapshot()
     if start is None:
+        await asyncio.sleep(min(GRACE_DETACHED, await remaining()))
         return
 
     while asyncio.get_event_loop().time() < deadline:
         await asyncio.sleep(0.15)
         now = await snapshot()
         if now is None:
+            await asyncio.sleep(min(GRACE_DETACHED, await remaining()))
             return
         # A few characters is a spinner or a timestamp; a real surface change
         # moves far more than that.
         if (now[0] != start[0] or now[1] != start[1]
                 or abs(now[2] - start[2]) > 40):
-            await asyncio.sleep(min(grace, max(0.0, deadline
-                                               - asyncio.get_event_loop().time())))
+            await asyncio.sleep(min(GRACE_VISIBLE, await remaining()))
             return
 
 

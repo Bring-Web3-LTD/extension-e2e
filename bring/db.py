@@ -1,22 +1,3 @@
-"""The environment's database, for the rows only the server can turn into a
-notification.
-
-Section 3's five variants are decided by five fields the server signs into the
-notification token, and those come from rows in `purchases`. The token is
-signed, so the only honest way to reach those variants is to put the rows there
-and let the server do its own arithmetic.
-
-Nothing here guesses a schema. `--inspect` reads the real one first, because a
-seeder written against an imagined column list fails in a way that looks like a
-product bug. Run the inspection once, and the seed shapes below are filled in
-from what it prints.
-
-Credentials come from the same names the QA automation already uses, so an
-existing `.env` works unchanged:
-
-    DB_HOST DB_PORT DB_USER DB_PASSWORD DB_NAME
-    DB_SSH_HOST DB_SSH_USER DB_SSH_PORT DB_SSH_KEY_PATH   (bastion, optional)
-"""
 import os
 from contextlib import contextmanager
 
@@ -47,17 +28,6 @@ except ImportError:
 class NoDatabase(RuntimeError):
     """No usable database. The tests that need one skip; nothing fails."""
 
-
-# Temporary environments do not share production's database, and they do not
-# each get their own server either: the deployer puts them all on one RDS
-# instance kept for the purpose, and gives each environment a database on it
-# named after itself. Verified against the environments that exist today —
-# `mySqlSolflare-temp` holds `dbname: solflare_temp` on this host.
-#
-# The credentials live in Secrets Manager, which is where the backend itself
-# reads them (utils/dataHandler.ts, `DB_SECRET_ARN`). Taking them from there
-# rather than from a .env means no database password is written to disk, and
-# no chance of pointing this at production by editing the wrong line.
 SHARED_SECRET = os.getenv("BRING_DB_SECRET", "mySqlSharedDevRds")
 
 _cached_secret = None
@@ -112,12 +82,7 @@ def _params() -> dict:
 
 @contextmanager
 def connect(database: str = None):
-    """A connection to *database*, through the bastion when one is configured.
 
-    The tunnel is opened per connection rather than held open for the run: the
-    seeding happens a handful of times, and a forwarder left running across a
-    twenty-minute suite is one more thing to notice has died.
-    """
     if not configured():
         raise NoDatabase(
             "No database configured. Set DB_HOST, DB_USER, DB_PASSWORD in .env "
@@ -143,7 +108,17 @@ def connect(database: str = None):
         elif os.getenv("DB_SSH_PASSWORD"):
             options["ssh_password"] = os.getenv("DB_SSH_PASSWORD")
         tunnel = SSHTunnelForwarder(**options)
-        tunnel.start()
+        try:
+            tunnel.start()
+        except Exception as unreachable:
+            # The bastion refused, or the key is not the one it expects. Same
+            # category as the database being unreachable: nothing about the
+            # extension, so the seeded tests skip and say which half failed.
+            raise NoDatabase(
+                f"the bastion at {options.get('ssh_address_or_host')} would not "
+                f"open a session: {unreachable}. Check DB_SSH_USER and the key "
+                f"in DB_SSH_KEY_PATH."
+            ) from unreachable
         params["host"], params["port"] = "127.0.0.1", tunnel.local_bind_port
 
     if database:
@@ -185,11 +160,6 @@ def query(sql: str, args=None, database: str = None) -> list:
             return list(cursor.fetchall())
 
 
-# The temporary environment shares an RDS instance with production, and the
-# credentials that reach one reach the other. A seeder is a writer, and a
-# writer pointed at the wrong database by a blank DB_NAME or a failed lookup
-# would be inventing purchases for real users. So writes name the database and
-# the name is checked; reads are left alone.
 PROTECTED = ("prod", "production", "live")
 
 
@@ -219,13 +189,7 @@ def execute(sql: str, args=None, database: str = None) -> int:
 
 
 def database_for(env_name: str = None) -> str:
-    """The database this environment's backend writes to.
 
-    `DB_NAME` wins when it is set. Otherwise the environment's own database is
-    looked up by name, because a temporary environment gets one of its own on
-    the shared instance and writing into the wrong one would be seeding
-    production-shaped data into somebody else's run.
-    """
     explicit = os.getenv("DB_NAME")
     if explicit:
         return explicit
