@@ -26,15 +26,26 @@ only, usable today.
 | Activation, confirmation, wildcard silence, phase | 1.3 | `tests/test_activate.py` |
 | Opt-out scope, duration, the removed 60-day cap | 1.4, 7.6 | `tests/test_optout.py` |
 | Hijack protection and stand-down | 1.8 | `tests/test_standdown.py` |
-| Server-built iframe URL, token in the fragment | 1.10 | `tests/test_iframe_url.py` |
-| Self-heal, top-frame-only injection, SPA routes | 1.11, 1.12, 1.6 | `tests/test_injection.py` |
 | Wallet states and the fast activation path | 1.5 | `tests/test_wallet.py` |
 | Notification request storm, backoff, recovery | 3.1 | `tests/test_notifications.py` |
 | The bar over search results: appears, closes, activates, opts out | 2 | `tests/test_offerbar.py` |
-| Saved `bring_*` state, all 23 keys | 4 | `tests/test_storage.py` |
-| No network, corrupt data, permissions, debug logger | 5, 6 | `tests/test_robustness.py` |
 
-**Not covered yet**, and honest about it:
+**Deliberately not covered.** These were built, run, and then removed as not
+worth their minutes — the decision was made with the results in front of us,
+not by guessing:
+
+- Saved `bring_*` state: the 23 keys, the upgrade that drops old ones, a
+  corrupted retailer list being re-downloaded.
+- Robustness: no network, a server that comes back, the debug logger's levels,
+  and an integrator who forgets a permission being told which one.
+- Injection: a host page that wipes the iframe, a third-party frame beside it,
+  an SPA route change leaving exactly one popup.
+- The iframe URL: the token riding in the fragment rather than the query.
+- Follow-ups, all but one: the counter, scopes, ttl, surviving a worker
+  restart. The thank-you page rule is kept as the one that proves the feature
+  works at all.
+
+**Not covered for other reasons**, and honest about it:
 
 - The five notification variants (section 3). They are chosen by fields the
   server signs into the notification token, and those come from rows in the

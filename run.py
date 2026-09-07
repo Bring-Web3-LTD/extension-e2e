@@ -147,34 +147,7 @@ def main() -> int:
             return 2        # the run was asked for something impossible
         print()
 
-    # A shard takes its slice of the checks and nothing else. Set by CI, where
-    # four machines run at once; unset everywhere else, which runs the lot.
-    #
-    # Split by measured duration rather than by count: the tests are wildly
-    # uneven — a notification variant is seventy seconds, a storage read is
-    # under one — so four equal *counts* would finish minutes apart and the run
-    # would be as slow as its unluckiest quarter.
-    shard = os.getenv("BRING_SHARD", "").strip()
-    shards = os.getenv("BRING_SHARDS", "").strip()
-
     command = [sys.executable, "-m", "pytest", f"--junitxml={JUNIT}"]
-
-    if shard and shards:
-        try:
-            import pytest_split          # noqa: F401
-            command += ["--splits", shards, "--group", shard]
-            durations = ROOT / ".test_durations"
-            if durations.exists():
-                command += ["--durations-path", str(durations)]
-            else:
-                # Without recorded timings the split is by name order, which is
-                # even but not balanced. Still four times fewer checks per
-                # machine; record durations once to do better.
-                print(f"shard {shard} of {shards} (no recorded timings — "
-                      f"splitting evenly by count)")
-        except ImportError:
-            print("pytest-split is not installed, so this shard is running the "
-                  "whole suite (pip install pytest-split)")
     if args.workers and args.workers != "0":
         if _has_xdist():
             # Plain `load`, not `loadgroup`: retailers are meant to mix within a
