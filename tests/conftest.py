@@ -162,6 +162,13 @@ async def context(request, lane):
 
     await storage.delete(lane, storage.NOTIFICATION_CHECK)
 
+    # And the address the last check used. The SDK only checks when the wallet
+    # actually changed — comparing against this, deliberately, so a wallet that
+    # re-broadcasts on every page load does not start a check each time. Left
+    # behind by an earlier test in the lane it silences the next test's
+    # broadcast, which then waits for a write that was never going to happen.
+    await storage.delete(lane, storage.LAST_CHECKED_WALLET)
+
     await netspy.install(lane, netspy.PASS)
     await netspy.reset(lane)
 
