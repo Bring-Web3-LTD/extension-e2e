@@ -117,30 +117,79 @@ jobs:
       - name: What happened
         if: always()
         run: |
+          # The summary answers one question first — is this safe to publish —
+          # and only then explains itself. A wall of green ticks buries the one
+          # line that matters, so passing checks are counted, not listed.
           {
-            echo "## Release check"
+            suite_line=$(grep -hoE "[0-9]+ (of [0-9]+ checks failed|checks passed)[^|]*" suite.log 2>/dev/null | tail -1)
+            failed=$(grep -cE "^  x " suite.log 2>/dev/null || echo 0)
+            walk_failed=$(grep -cE "^\[FAIL\]" walk.log 2>/dev/null || echo 0)
+            total=$((failed + walk_failed))
+
+            if [ "$total" -eq 0 ]; then
+              echo "# ✅ Safe to publish"
+              echo
+              echo "Everything the tool checks passed."
+            else
+              echo "# ❌ $total problem(s) — do not publish yet"
+            fi
+            echo
+            echo "\`${BRING_ENV_NAME}\` · bringweb3 \`${BRING_BACKEND_BRANCH}\` · chromeExtension \`${BRING_FRONTEND_BRANCH}\`"
+            echo
+
+            # ── what broke, and nothing else ──────────────────────────
+            if [ "$total" -gt 0 ]; then
+              echo "## What broke"
+              echo
+              if [ "$failed" -gt 0 ]; then
+                # Each failure is two lines in run.py's verdict: the name, then
+                # the reason. Paired here so the reason is readable without
+                # opening the log.
+                grep -A 1 "^  x " suite.log \
+                  | sed -e 's/^  x tests\.\(.*\)/\n**\1**/' \
+                        -e 's/^      \(.*\)/\1/' -e '/^--$/d'
+                echo
+              fi
+              if [ "$walk_failed" -gt 0 ]; then
+                echo "### In the walk"
+                grep -A 4 "^\[FAIL\]" walk.log | sed -e 's/^\[FAIL\] /\n**/' \
+                  -e 's/   (\([0-9]*s\))$/** (\1)/' -e '/^--$/d'
+                echo
+              fi
+              echo "Screenshots, storage dumps and Playwright traces for every"
+              echo "failure are in **Artifacts** at the top of this page."
+              echo
+            fi
+
+            # ── the counts, for the record ────────────────────────────
+            echo "## The numbers"
             echo
             echo "| | |"
             echo "|---|---|"
-            echo "| environment | \`${BRING_ENV_NAME}\` |"
-            echo "| bringweb3 | \`${BRING_BACKEND_BRANCH}\` |"
-            echo "| chromeExtension | \`${BRING_FRONTEND_BRANCH}\` |"
+            [ -n "$suite_line" ] && echo "| suite | $suite_line |"
+            walk_ok=$(grep -cE "^\[ok \]" walk.log 2>/dev/null || echo 0)
+            echo "| walk | $walk_ok step(s) passed, $walk_failed failed |"
+            skipped=$(grep -oE "[0-9]+ skipped" suite.log 2>/dev/null | tail -1)
+            [ -n "$skipped" ] && echo "| not run | $skipped |"
             echo
 
-            if [ -f suite.log ]; then
-              echo "### The suite"
+            if [ -n "$skipped" ]; then
+              echo "<details><summary>Why some checks did not run</summary>"
+              echo
               echo '```'
-              # The verdict block run.py prints at the end.
-              sed -n '/^=\{20,\}$/,$p' suite.log | tail -40
+              grep -hoE "SKIPPED.*" suite.log 2>/dev/null | sed 's/SKIPPED //' \
+                | sort | uniq -c | sort -rn | head -10
               echo '```'
+              echo "</details>"
+              echo
             fi
 
-            if [ -f walk.log ]; then
-              echo "### The walk"
-              echo '```'
-              grep -E '^\[(ok |FAIL)\]|^   (ok|X) |^-- |^(PASS|FAIL) ' walk.log | tail -80
-              echo '```'
-            fi
+            echo "<details><summary>The walk, step by step</summary>"
+            echo
+            echo '```'
+            grep -E "^\[(ok |FAIL)\]|^   (ok|X) |^-- " walk.log 2>/dev/null | tail -90
+            echo '```'
+            echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Keep the evidence

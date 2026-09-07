@@ -92,6 +92,24 @@ class Walk:
             flag = "  ok " if result.ok else "  X  "
             print(f"   {flag}{name:<18} {result.detail}")
 
+    async def one(self, title, work, site=None):
+        """Run *work* against a single shop and record it like any other step.
+
+        For checks whose subject is the extension's own bookkeeping rather than
+        a shop — how it walks the quiet list, say. Asking four shops the same
+        question adds nothing, and asking them at once makes the answer wrong:
+        a popup check can come back with `quietDomainsChanged`, and the SDK
+        then replaces the whole list, wiping the rows the other three tabs are
+        relying on. Measured — the shop that failed changed run to run.
+        """
+        site = site or self.sites[0]
+        started = time.time()
+        result = await self._guarded(work, site)
+        self.rows.append((title, {site: result}))
+        self.failures += 0 if result.ok else 1
+        self._print(title, {site: result}, time.time() - started)
+        return result
+
     async def clear(self, note="clearing the quiet list for everyone"):
         """Wipe the shared list between acts.
 
@@ -415,6 +433,42 @@ async def check_expired_row_hides_nothing(site, tab, walk):
     return Result.passed("the live row still silences")
 
 
+async def expire_every_row(walk):
+    """Move every shop's quiet row into the past, in one write.
+
+    The list belongs to the browser, not to a tab, so anything that rewrites it
+    has to happen once — outside `walk.step`, which runs all four tabs at the
+    same time.
+    """
+    rows = await storage.quiet_domains(walk.context)
+    for entry in rows:
+        if isinstance(entry, dict):
+            entry["time"] = storage.past()
+    await storage.set(walk.context, storage.QUIET_DOMAINS, rows)
+    print(f"\n-- moving every silence into the past ({len(rows)} row(s))")
+
+
+async def seed_dead_and_live_rows(walk, only=None):
+    """One dead row and one live row per shop, written together.
+
+    `*.host` is the shape the SDK itself writes; a bare host does not match
+    `www.<host>` under the reverse-string matching, and a row that matches
+    nothing tests nothing.
+    """
+    now = int(time.time() * 1000)
+    rows = []
+    for site in ([only] if only else walk.sites):
+        host = f"*.{storage.normalise(site)}"
+        rows.append({"domain": host, "type": "kds", "phase": "quiet",
+                     "isRegex": False,
+                     "time": [now - 4 * HOUR, now - 2 * HOUR]})   # long dead
+        rows.append({"domain": host, "type": "kds", "phase": "quiet",
+                     "isRegex": False,
+                     "time": [now, now + 30 * MINUTE]})           # live
+    await storage.set(walk.context, storage.QUIET_DOMAINS, rows)
+    print(f"\n-- a dead row and a live one for each shop ({len(rows)} rows)")
+
+
 # ── the acts ────────────────────────────────────────────────────────
 
 async def act_popup(walk):
@@ -474,12 +528,18 @@ async def act_offer_detail(walk):
     await walk.step("close it", close_popup)
     await walk.step("the silence names this shop and no other",
                     lambda s, t: check_silence_is_scoped(s, t, walk))
+
+    await expire_every_row(walk)
     await walk.step("and the offer returns when the window ends",
                     lambda s, t: check_silence_expires(s, t, walk))
     await walk.clear()
 
-    await walk.step("an expired row does not hide a live one",
-                    lambda s, t: check_expired_row_hides_nothing(s, t, walk))
+    # One shop: this is about how the extension reads its own list, and four
+    # tabs checking at once let one server answer replace the rows the others
+    # need.
+    await seed_dead_and_live_rows(walk, only=walk.sites[0])
+    await walk.one("an expired row does not hide a live one",
+                   lambda s, t: check_expired_row_hides_nothing(s, t, walk))
     await walk.clear()
 
 
