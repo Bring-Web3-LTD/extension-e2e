@@ -147,7 +147,7 @@ async def test_dismissing_the_confirmation_switches_to_quiet(on_retailer, contex
 
     again = await context.new_page()
     await again.goto(retailer, wait_until="domcontentloaded")
-    shown = await popup.wait_for_popup(again, timeout=12)
+    shown = await popup.wait_for_popup(again, timeout=popup.ABSENT)
     await again.close()
     assert shown is None, \
         "the retailer popped again after the confirmation was dismissed"
@@ -260,7 +260,7 @@ async def test_the_silence_is_what_keeps_it_quiet(on_retailer, context, retailer
 
     silent = await context.new_page()
     await silent.goto(retailer, wait_until="domcontentloaded")
-    shown = await popup.wait_for_popup(silent, timeout=12)
+    shown = await popup.wait_for_popup(silent, timeout=popup.ABSENT)
     await silent.close()
     assert shown is None, "the retailer popped again while it was still silenced"
 

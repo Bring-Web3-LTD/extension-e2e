@@ -496,11 +496,14 @@ async def act_widget(context, headless):
         if frame and await popup.is_widget(frame):
             say(await popup.click(frame, popup.WIDGET["close"], settle=3),
                 "the badge has its own X")
+            # The badge's X is the offer's close: Home.tsx hands the widget the
+            # same `close`, and the background turns it into a quiet row with no
+            # widget branch of any kind. Confirmed as intended.
             entry = await storage.quiet_entry(context, site)
-            say(entry is None,
-                "dismissing the badge silences nothing — it is not a close"
-                if entry is None else
-                f"dismissing the badge silenced {name} ({entry.get('phase')!r})")
+            say(entry is not None,
+                f"dismissing the badge silences {name} ({entry.get('phase')!r})"
+                if entry else
+                f"dismissing the badge silenced nothing — the close did not land")
     finally:
         await tab.close()
         await storage.delete(context, storage.QUIET_DOMAINS)

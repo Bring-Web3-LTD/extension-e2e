@@ -290,7 +290,7 @@ async def test_the_activated_shop_shows_the_confirmation_until_it_is_closed(
     # Closed: the shop is now quiet, and a revisit brings nothing back.
     again = await context.new_page()
     await again.goto(f"https://{host}", wait_until="domcontentloaded")
-    back = await popup.wait_for_popup(again, timeout=15)
+    back = await popup.wait_for_popup(again, timeout=popup.ABSENT)
     await again.close()
 
     assert back is None, (
@@ -410,7 +410,7 @@ async def test_a_stood_down_retailer_gets_no_bar(page, context, keyword):
     if reason:
         pytest.skip(reason)
 
-    again = await popup.wait_for_bar(page, timeout=15)
+    again = await popup.wait_for_bar(page, timeout=popup.ABSENT)
     assert again is None, (
         f"a bar appeared for {keyword!r} on {shop['domain']}, which is "
         f"stood down")

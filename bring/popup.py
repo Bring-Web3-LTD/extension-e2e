@@ -323,6 +323,21 @@ async def wait_for_confirmation(page, timeout: float = 60):
     return await wait_for_popup(page, timeout=timeout, route="activated")
 
 
+#: How long to wait before concluding that nothing is going to appear.
+#:
+#: Waiting for something to *arrive* is free — the poll returns the moment it
+#: does, so a generous timeout costs nothing when it passes. Waiting to prove
+#: an absence is the opposite: every second of it is spent, every time. A third
+#: of this suite does that, and at twelve to thirty seconds apiece it was
+#: thirty-four minutes of the eighty-six.
+#:
+#: Eight seconds is not a guess at what feels safe. A popup that is coming
+#: needs one server round-trip and one inject, and across a full run every
+#: popup that appeared was on screen within four. Eight is double that, which
+#: leaves the assertion honest: a popup this suite calls absent had twice the
+#: time it has ever needed.
+ABSENT = 8
+
 #: The two layouts the server can answer a search with. Both are "the bar".
 BAR_ROUTES = ("offerbar", "framed")
 
@@ -408,8 +423,57 @@ async def click(frame, selector: str, *, settle: float = 1.5,
         # A pulsing or sliding element that never settles: say so by retrying
         # once with the check off rather than reporting "no such button".
         await element.click(force=True, timeout=8000)
-    await asyncio.sleep(settle)
+    await _settled_after_click(frame, settle)
     return True
+
+
+async def _settled_after_click(frame, budget: float):
+    """Wait until the click has visibly done something, or *budget* runs out.
+
+    A flat sleep here was the single most expensive habit in the suite: fifty
+    eight call sites, several of them six or eight seconds, spent in full on
+    every run whether or not the click had already finished. The long ones are
+    after activate, where the tab is sent through the affiliate network — real
+    waiting, but usually far less than the worst case they were sized for.
+
+    What a click actually does is observable, so it is observed:
+
+      * the frame goes away — a close, or a surface replaced
+      * the frame's route changes — the offer becoming the confirmation
+      * the page navigates — activate handing the tab to the affiliate hop
+      * the frame's content changes — opt-out opening, which keeps both urls
+
+    Any of those and the wait ends after a short grace for the render. None of
+    them and it waits the whole budget exactly as before, so a click this
+    cannot read is no worse off than it was.
+    """
+    deadline = asyncio.get_event_loop().time() + budget
+    grace = 0.25
+
+    async def snapshot():
+        try:
+            return (frame.url, frame.page.url,
+                    await frame.evaluate(
+                        "() => document.body ? document.body.innerHTML.length : 0"))
+        except Exception:
+            return None        # detached: that is itself the change
+
+    start = await snapshot()
+    if start is None:
+        return
+
+    while asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(0.15)
+        now = await snapshot()
+        if now is None:
+            return
+        # A few characters is a spinner or a timestamp; a real surface change
+        # moves far more than that.
+        if (now[0] != start[0] or now[1] != start[1]
+                or abs(now[2] - start[2]) > 40):
+            await asyncio.sleep(min(grace, max(0.0, deadline
+                                               - asyncio.get_event_loop().time())))
+            return
 
 
 async def visible(frame, selector: str) -> bool:

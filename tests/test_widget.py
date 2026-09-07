@@ -131,7 +131,7 @@ async def test_the_badge_dismiss_silences_the_retailer(page, context,
     # Behaviour first: come back and nothing should appear.
     again = await context.new_page()
     await again.goto(widget_retailer, wait_until="domcontentloaded")
-    back = await popup.wait_for_popup(again, timeout=15)
+    back = await popup.wait_for_popup(again, timeout=popup.ABSENT)
     await again.close()
     assert back is None, \
         f"{widget_retailer} offered again straight after the badge was dismissed"

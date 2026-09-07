@@ -50,7 +50,7 @@ async def test_no_network_does_not_crash_the_extension(context, retailer):
             lambda e: errors.append(str(e)) if ours(e) else None)
 
     await page.goto(retailer, wait_until="domcontentloaded")
-    shown = await popup.wait_for_popup(page, timeout=12)
+    shown = await popup.wait_for_popup(page, timeout=popup.ABSENT)
     await page.close()
 
     assert shown is None, "a popup appeared while the server was unreachable"
@@ -64,7 +64,7 @@ async def test_the_flows_work_again_once_the_server_is_back(context, retailer):
     await netspy.install(context, netspy.FAIL)
     page = await context.new_page()
     await page.goto(retailer, wait_until="domcontentloaded")
-    assert await popup.wait_for_popup(page, timeout=10) is None
+    assert await popup.wait_for_popup(page, timeout=popup.ABSENT) is None
     await page.close()
 
     await netspy.set_mode(context, netspy.PASS)

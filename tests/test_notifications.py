@@ -27,7 +27,14 @@ ADDRESS_B = config.OTHER_WALLET
 NEUTRAL = "https://example.com"
 
 
-async def settle(page, ms: int = 2500):
+async def settle(page, ms: int = 1500):
+    """Give the worker time to act on what just happened.
+
+    A flat sleep, and deliberately so: what is being waited for here is often
+    that *nothing* happens — a second reward check that must not be made — and
+    there is no event for the absence of a request. The numbers are the
+    smallest that held across a full run, not round figures.
+    """
     await page.wait_for_timeout(ms)
 
 
@@ -45,7 +52,7 @@ async def test_repeated_broadcasts_of_the_same_address_make_one_check(context):
     await page.goto(NEUTRAL, wait_until="domcontentloaded")
 
     await netspy.broadcast_wallet(page, ADDRESS_A)
-    await settle(page, 4000)
+    await settle(page, 1500)
     first = await netspy.count(context, netspy.NOTIFICATION_CHECK)
     assert first >= 1, \
         "the first broadcast of a new address made no reward check at all"
@@ -55,7 +62,7 @@ async def test_repeated_broadcasts_of_the_same_address_make_one_check(context):
         await netspy.broadcast_wallet(page, ADDRESS_A)
         await page.wait_for_timeout(400)
     await page.reload(wait_until="domcontentloaded")
-    await settle(page, 4000)
+    await settle(page, 1500)
 
     repeats = await netspy.count(context, netspy.NOTIFICATION_CHECK)
     await page.close()
@@ -71,13 +78,13 @@ async def test_a_real_address_change_fires_exactly_one_check(context):
     await page.goto(NEUTRAL, wait_until="domcontentloaded")
 
     await netspy.broadcast_wallet(page, ADDRESS_A)
-    await settle(page, 4000)
+    await settle(page, 1500)
     assert await storage.get(context, storage.LAST_CHECKED_WALLET) == ADDRESS_A, \
         "lastCheckedWalletAddress was not updated after the first check"
 
     await netspy.reset(context)
     await netspy.broadcast_wallet(page, ADDRESS_B)
-    await settle(page, 4000)
+    await settle(page, 1500)
 
     fired = await netspy.count(context, netspy.NOTIFICATION_CHECK)
     marker = await storage.get(context, storage.LAST_CHECKED_WALLET)
@@ -103,9 +110,9 @@ async def test_the_broadcast_is_always_answered(context):
     page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
 
     await netspy.broadcast_wallet(page, ADDRESS_A)
-    await settle(page, 3000)
+    await settle(page, 2000)
     await netspy.broadcast_wallet(page, ADDRESS_A)      # the skipped one
-    await settle(page, 3000)
+    await settle(page, 2000)
     await page.close()
 
     unchecked = [e for e in errors if "lastError" in e or "message port closed" in e]
@@ -124,7 +131,7 @@ async def test_a_failed_check_backs_off_for_an_hour(context):
     await page.goto(NEUTRAL, wait_until="domcontentloaded")
 
     await netspy.broadcast_wallet(page, ADDRESS_A)
-    await settle(page, 4000)
+    await settle(page, 1500)
 
     window = await storage.get(context, storage.NOTIFICATION_CHECK)
     assert isinstance(window, list) and len(window) == 2, \
@@ -158,7 +165,7 @@ async def test_a_bad_reply_backs_off_the_same_way(context, mode, label):
     await page.goto(NEUTRAL, wait_until="domcontentloaded")
 
     await netspy.broadcast_wallet(page, ADDRESS_A)
-    await settle(page, 4000)
+    await settle(page, 1500)
 
     window = await storage.get(context, storage.NOTIFICATION_CHECK)
     shown = await popup.wait_for_popup(page, timeout=3, route="notification")
@@ -178,7 +185,7 @@ async def test_the_check_resumes_once_the_backoff_expires(context):
     page = await context.new_page()
     await page.goto(NEUTRAL, wait_until="domcontentloaded")
     await netspy.broadcast_wallet(page, ADDRESS_A)
-    await settle(page, 4000)
+    await settle(page, 1500)
     assert await storage.get(context, storage.NOTIFICATION_CHECK), \
         "no backoff was written, so there is nothing to recover from"
 
@@ -189,7 +196,7 @@ async def test_the_check_resumes_once_the_backoff_expires(context):
     await netspy.reset(context)
     await page.goto(NEUTRAL + "/?again", wait_until="domcontentloaded")
     await netspy.broadcast_wallet(page, ADDRESS_B)
-    await settle(page, 4000)
+    await settle(page, 1500)
     resumed = await netspy.count(context, netspy.NOTIFICATION_CHECK)
     await page.close()
 
@@ -208,10 +215,10 @@ async def test_disconnecting_removes_the_address_and_reconnecting_is_quiet(conte
     await page.goto(NEUTRAL, wait_until="domcontentloaded")
 
     await netspy.broadcast_wallet(page, ADDRESS_A)
-    await settle(page, 4000)
+    await settle(page, 1500)
 
     await netspy.broadcast_wallet(page, "")
-    await settle(page, 2500)
+    await settle(page, 1500)
     assert not await storage.get(context, storage.WALLET_ADDRESS), \
         "disconnecting did not remove the stored wallet address"
     assert await storage.get(context, storage.LAST_CHECKED_WALLET) == ADDRESS_A, \
@@ -219,12 +226,12 @@ async def test_disconnecting_removes_the_address_and_reconnecting_is_quiet(conte
 
     await netspy.reset(context)
     await netspy.broadcast_wallet(page, ADDRESS_A)
-    await settle(page, 3000)
+    await settle(page, 2000)
     same = await netspy.count(context, netspy.NOTIFICATION_CHECK)
 
     await netspy.reset(context)
     await netspy.broadcast_wallet(page, ADDRESS_B)
-    await settle(page, 4000)
+    await settle(page, 1500)
     different = await netspy.count(context, netspy.NOTIFICATION_CHECK)
     await page.close()
 
@@ -245,7 +252,7 @@ async def test_an_active_check_window_skips_the_server(context):
     await page.goto(NEUTRAL, wait_until="domcontentloaded")
     await netspy.reset(context)
     await page.reload(wait_until="domcontentloaded")
-    await settle(page, 3000)
+    await settle(page, 2000)
     fired = await netspy.count(context, netspy.NOTIFICATION_CHECK)
     await page.close()
 
@@ -403,7 +410,7 @@ async def test_notification_variant(context, seeded, variant):
     page = await context.new_page()
     await page.goto(NEUTRAL, wait_until="domcontentloaded")
     await netspy.broadcast_wallet(page, wallet)
-    await settle(page, 6000)
+    await settle(page, 2000)
 
     frame = await popup.wait_for_popup(page, timeout=20, route="notification")
     if frame is None:
@@ -446,7 +453,7 @@ async def test_small_amounts_round_to_three_decimals(context, seeded):
     page = await context.new_page()
     await page.goto(NEUTRAL, wait_until="domcontentloaded")
     await netspy.broadcast_wallet(page, "")
-    await settle(page, 6000)
+    await settle(page, 2000)
 
     frame = await popup.wait_for_popup(page, timeout=20, route="notification")
     if frame is None:
@@ -483,7 +490,7 @@ async def test_closing_the_notification_removes_it(context, seeded):
     page = await context.new_page()
     await page.goto(NEUTRAL, wait_until="domcontentloaded")
     await netspy.broadcast_wallet(page, "")
-    await settle(page, 6000)
+    await settle(page, 2000)
 
     frame = await popup.wait_for_popup(page, timeout=20, route="notification")
     if frame is None:
@@ -522,7 +529,7 @@ async def test_stop_reminding_turns_the_reminders_off(context, seeded):
     page = await context.new_page()
     await page.goto(NEUTRAL, wait_until="domcontentloaded")
     await netspy.broadcast_wallet(page, "")
-    await settle(page, 6000)
+    await settle(page, 2000)
 
     frame = await popup.wait_for_popup(page, timeout=20, route="notification")
     if frame is None:

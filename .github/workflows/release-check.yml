@@ -47,12 +47,30 @@ permissions:
   contents: read
 
 jobs:
+  # Four machines, a quarter of the checks each. Nothing about a test changes —
+  # there are simply four browsers' worth of waiting happening at once instead
+  # of one. The suite spends almost all of its time waiting on real shops, so
+  # this is the only lever that moves the wall clock without giving something
+  # up.
+  #
+  # The environment is shared: whichever shard gets there first deploys it, the
+  # rest find it up and reuse it. That is the same race two people running the
+  # tool at once already produce, and `Environment.ensure` was written for it.
   check:
-    name: Everything, against a fresh environment
+    name: Shard ${{ matrix.shard }} of 4
     runs-on: ubuntu-latest
     timeout-minutes: 75
 
+    strategy:
+      # One shard failing is a result, not a reason to abandon the other three.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+
     env:
+      BRING_SHARD: ${{ matrix.shard }}
+      BRING_SHARDS: '4' 
+
       BRING_ENV_NAME: ${{ github.event.inputs.environment_name }}
       BRING_BACKEND_BRANCH: ${{ github.event.inputs.backend_branch }}
       BRING_FRONTEND_BRANCH: ${{ github.event.inputs.frontend_branch }}
@@ -120,9 +138,14 @@ jobs:
             python -u run.py --headless -n 4 | tee suite.log
           fi
 
+      # Only on the first shard. The walk drives all four shops together in one
+      # browser by design, so it cannot be split — and running it on every
+      # shard would be the same journey four times, four times the traffic to
+      # the same shops, for no extra information.
       - name: The walk — every shop in step, in one browser
+        # (shard 1 only; see above)
         id: walk
-        if: ${{ github.event.inputs.scope != 'popup and widget only' }}
+        if: ${{ github.event.inputs.scope != 'popup and widget only' && matrix.shard == 1 }}
         continue-on-error: true
         run: python -u flow.py --headless | tee walk.log
 
@@ -159,7 +182,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: failures
+          # Per shard, or the four jobs collide on one name and only the last
+          # to finish keeps its evidence.
+          name: failures-shard-${{ matrix.shard }}
           path: |
             artifacts/
             suite.log

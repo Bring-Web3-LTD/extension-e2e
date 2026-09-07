@@ -162,7 +162,7 @@ async def search(page, term: str, engine: str = "google") -> str:
     except Exception as e:
         return f"{engine} did not offer a usable search box ({e})"
 
-    await asyncio.sleep(2)
+    await asyncio.sleep(1)
     reason = await blocked(page)
     if reason:
         return reason
@@ -176,5 +176,5 @@ async def search(page, term: str, engine: str = "google") -> str:
                 f"{term!r} (landed on {page.url[:100]})")
 
     # The bar is injected after the results settle.
-    await asyncio.sleep(2)
+    await asyncio.sleep(1)
     return ""

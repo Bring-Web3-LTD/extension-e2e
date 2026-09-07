@@ -137,7 +137,7 @@ async def test_optout_all_sites_silences_everything(on_retailer, context,
     for site in (retailer, control):
         tab = await context.new_page()
         await tab.goto(site, wait_until="domcontentloaded")
-        shown = await popup.wait_for_popup(tab, timeout=12)
+        shown = await popup.wait_for_popup(tab, timeout=popup.ABSENT)
         await tab.close()
         assert shown is None, \
             f"the popup appeared on {site} while opted out of all websites"
@@ -179,7 +179,7 @@ async def test_forever_optout_outlives_sixty_days(on_retailer, context, retailer
 
     tab = await context.new_page()
     await tab.goto(retailer, wait_until="domcontentloaded")
-    shown = await popup.wait_for_popup(tab, timeout=12)
+    shown = await popup.wait_for_popup(tab, timeout=popup.ABSENT)
     await tab.close()
     assert shown is None, \
         "a 'forever' opt-out stopped silencing once 60 days had passed"

@@ -119,7 +119,7 @@ async def test_close_silences_this_retailer_only(on_retailer, context, retailer,
     # Back on the retailer: still silent.
     again = await context.new_page()
     await again.goto(retailer, wait_until="domcontentloaded")
-    assert await popup.wait_for_popup(again, timeout=12) is None, \
+    assert await popup.wait_for_popup(again, timeout=popup.ABSENT) is None, \
         f"the popup came back on {retailer} while it should be silenced"
     await again.close()
 
@@ -177,7 +177,7 @@ async def test_expired_row_does_not_hide_an_active_one(context, retailer):
 
     page = await context.new_page()
     await page.goto(retailer, wait_until="domcontentloaded")
-    shown = await popup.wait_for_popup(page, timeout=12)
+    shown = await popup.wait_for_popup(page, timeout=popup.ABSENT)
     await page.close()
 
     assert shown is None, \

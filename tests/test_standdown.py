@@ -140,7 +140,7 @@ async def test_stand_down_quiets_the_whole_domain(context, retailer):
     # A different path on the same retailer is covered by the same entry.
     other = await context.new_page()
     await other.goto(f"{retailers.origin(retailer)}/", wait_until="domcontentloaded")
-    shown = await popup.wait_for_popup(other, timeout=12)
+    shown = await popup.wait_for_popup(other, timeout=popup.ABSENT)
     await other.close()
     assert shown is None, \
         "another path on the stood-down retailer still popped"

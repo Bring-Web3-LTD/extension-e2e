@@ -151,7 +151,19 @@ def connect(database: str = None):
 
     connection = None
     try:
-        connection = pymysql.connect(**params)
+        try:
+            connection = pymysql.connect(**params)
+        except Exception as unreachable:
+            # Not a defect in anything under test: the database sits inside a
+            # VPC, so a machine outside it — a CI runner with no bastion key,
+            # a laptop off the VPN — simply cannot get there. Raised as
+            # NoDatabase so the tests that need seeded rows skip and say why,
+            # instead of eight identical red checks about network topology.
+            raise NoDatabase(
+                f"cannot reach {params.get('host')}: {unreachable}. "
+                f"Set DB_SSH_HOST/DB_SSH_USER/DB_SSH_KEY_PATH to tunnel in, "
+                f"or expect the seeded notification tests to skip."
+            ) from unreachable
         yield connection
     finally:
         if connection:
