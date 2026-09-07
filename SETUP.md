@@ -90,17 +90,28 @@ repository and nothing wider:
         "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
       },
       "StringLike": {
-        "token.actions.githubusercontent.com:sub": "repo:Bring-Web3-LTD/extension-e2e:*"
+        "token.actions.githubusercontent.com:sub": "repo:Bring-Web3-LTD@122225882/extension-e2e@1359257651:*"
       }
     }
   }]
 }
 ```
 
-The `sub` line is the security boundary. `repo:Bring-Web3-LTD/extension-e2e:*`
-means only workflows in this repository can assume the role. A `*` on its own
-there would let **any** repository on GitHub assume it — check this line before
-moving on.
+The `sub` line is the security boundary: only workflows in this repository can
+assume the role. A `*` on its own there would let **any** repository on GitHub
+assume it — check this line before moving on.
+
+The numbers in it are not decoration. This organisation has OIDC subject
+customisation turned on, so GitHub sends the org and repo *ids* alongside their
+names — `repo:Bring-Web3-LTD@122225882/extension-e2e@1359257651:...`. Names can
+be changed and reused; the ids cannot, which is why the setting exists. A policy
+written with the names alone matches nothing, and the run fails with
+`Not authorized to perform sts:AssumeRoleWithWebIdentity` while every part of
+the setup looks correct.
+
+If those ids ever need checking, CloudTrail has them: look up
+`AssumeRoleWithWebIdentity` and read `userIdentity.principalId` on a failed
+attempt. It is the exact string the policy has to match.
 
 Then **Add permissions → Create inline policy → JSON**, paste this, and name it
 `extension-e2e-release-check`:
