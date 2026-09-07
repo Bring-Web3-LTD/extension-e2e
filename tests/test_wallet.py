@@ -49,9 +49,32 @@ class Counter:
         await context.route(ACTIVATE_ENDPOINT, handler)
 
 
-async def test_popup_works_with_no_wallet_connected(on_retailer):
+@pytest.fixture
+async def walletless(context, page, retailer):
+    """On the retailer with no wallet connected, and that state made true.
+
+    `on_retailer` cannot be used for this: it navigates immediately, and by
+    then the wallet question is already settled. Two things put one there
+    without this test asking — the mock extension ships with an address baked
+    in, and every earlier test in this lane's browser that connected one left
+    it behind, because the browser is deliberately shared.
+
+    So the precondition is established rather than assumed. Both keys go: the
+    SDK's own `bring_walletAddress`, and the unprefixed `walletAddress` the
+    host extension holds, which is the one the content script reports on
+    navigation.
+    """
+    await netspy.set_host_wallet(context, "")
+    await storage.delete(context, storage.WALLET_ADDRESS)
+    await storage.delete(context, storage.LAST_CHECKED_WALLET)
+
+    await page.goto(retailer, wait_until="domcontentloaded")
+    frame = await popup.wait_for_offer(page, timeout=30)
+    return page, frame
+
+async def test_popup_works_with_no_wallet_connected(walletless):
     """1.5 — with no wallet, the offer still shows and offers to connect."""
-    page, frame = on_retailer
+    page, frame = walletless
     assert frame, "no popup appeared without a wallet connected"
 
     assert await popup.visible(frame, popup.OFFER["activate"]), \
@@ -60,9 +83,9 @@ async def test_popup_works_with_no_wallet_connected(on_retailer):
         "the offer does not offer to connect a wallet when none is connected"
 
 
-async def test_connecting_a_wallet_shows_its_address(on_retailer):
+async def test_connecting_a_wallet_shows_its_address(walletless):
     """1.5 — after connecting, the popup shows the address instead of the prompt."""
-    page, frame = on_retailer
+    page, frame = walletless
     assert frame, "no popup appeared"
 
     if not await popup.visible(frame, popup.OFFER["connect_wallet"]):
@@ -87,6 +110,12 @@ async def test_activation_takes_the_fast_path_with_no_wallet_connected(context, 
     """
     counter = Counter()
     await counter.watch(context)
+
+    # No wallet, and made so rather than hoped for: the mock ships with one and
+    # earlier tests in this shared browser leave theirs behind.
+    await netspy.set_host_wallet(context, "")
+    await storage.delete(context, storage.WALLET_ADDRESS)
+    await storage.delete(context, storage.LAST_CHECKED_WALLET)
 
     page = await context.new_page()
     await page.goto(retailer, wait_until="domcontentloaded")
@@ -120,6 +149,12 @@ async def test_connecting_after_the_popup_forces_a_fresh_activation(context, ret
     """
     counter = Counter()
     await counter.watch(context)
+
+    # No wallet, and made so rather than hoped for: the mock ships with one and
+    # earlier tests in this shared browser leave theirs behind.
+    await netspy.set_host_wallet(context, "")
+    await storage.delete(context, storage.WALLET_ADDRESS)
+    await storage.delete(context, storage.LAST_CHECKED_WALLET)
 
     page = await context.new_page()
     await page.goto(retailer, wait_until="domcontentloaded")
