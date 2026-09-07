@@ -26,7 +26,6 @@ Patterns are matched against `reverseStr(host) + path`, the same way the
 retailer list is (domainsListSearch.ts), so a rule for `example.com` is written
 against `moc.elpmaxe`.
 """
-import json
 import time
 
 import pytest

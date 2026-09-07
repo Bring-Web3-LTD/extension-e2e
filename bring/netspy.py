@@ -15,7 +15,6 @@ The wrapper lives on the worker's global scope, so it is lost if Chrome
 recycles the worker. Re-install before asserting rather than assuming it
 survived; `installed()` says whether it is still there.
 """
-import json
 
 from bring.browser import wake_worker
 

@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from bring import netspy, pages, popup, retailers, storage
+from bring import pages, popup, retailers, storage
 
 pytestmark = pytest.mark.popup
 
