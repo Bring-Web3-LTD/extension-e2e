@@ -124,7 +124,10 @@ Then **Add permissions → Create inline policy → JSON**, paste this, and name
       "Sid": "LetTheDeployerUseItsOwnRoles",
       "Effect": "Allow",
       "Action": "iam:PassRole",
-      "Resource": "*",
+      "Resource": [
+        "arn:aws:iam::083114526744:role/dev-env-deployer-task-role",
+        "arn:aws:iam::083114526744:role/dev-env-deployer-execution-role"
+      ],
       "Condition": {
         "StringEquals": { "iam:PassedToService": "ecs-tasks.amazonaws.com" }
       }
@@ -156,6 +159,13 @@ Then **Add permissions → Create inline policy → JSON**, paste this, and name
   ]
 }
 ```
+
+`iam:PassRole` names the deployer's two roles rather than allowing any role in
+the account. Starting a task means handing it a role to run as, so a `*` here
+plus the `ecs:RunTask` above would be permission to run something in that
+cluster as *any* role ECS can assume, including one far more privileged than
+the deployer's. The two named here are the ones the task definition actually
+uses.
 
 Copy the role's **ARN** from the top of the page. It looks like:
 
