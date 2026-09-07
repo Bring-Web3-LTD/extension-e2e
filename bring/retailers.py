@@ -21,7 +21,7 @@ import os
 # Hand-picked: shops that stay live in most countries. Order matters only in
 # that the first is the default when a run is pinned to a single retailer.
 DEFAULT = (
-    "https://www.aliexpress.com",
+    "https://www.luminskin.com",
     "https://www.perfectlens.ca",
     "https://www.firesideoutdoor.com",
     "https://www.smallrig.com",
