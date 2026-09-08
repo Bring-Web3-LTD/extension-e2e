@@ -94,13 +94,3 @@ WALLET = os.getenv("BRING_WALLET", "k:7dcf6f1f2c8f4a02d4b29eb2ae34e41718137f1e8d
 # offer shows. Never seeded against, so it only has to be different.
 OTHER_WALLET = os.getenv("BRING_WALLET_OTHER", "k:29647637d1b93d284f8bf83430136b665412b93db2371ed1b7897d5fa2888598")
 
-
-# How long a temporary environment lives before the deployer destroys it.
-TTL_HOURS = int(os.getenv("BRING_ENV_TTL_HOURS", "8"))
-
-# What a full run needs, with room to spare. Measured: the suite and the walk
-# together take about half an hour on a CI runner, and an environment that
-# expires in the middle takes every remaining check down with it — all four
-# shops failing at once with "no popup appeared", which looks like the product
-# and is not.
-NEEDS_MINUTES = int(os.getenv("BRING_ENV_NEEDS_MINUTES", "45"))

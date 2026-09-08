@@ -101,29 +101,7 @@ class Environment:
             state = "ready" if settled in ("CREATE_COMPLETE", "UPDATE_COMPLETE") else "broken"
 
         if state == "ready":
-            # An environment with less life left than the run needs is worse
-            # than no environment at all: the run starts, looks healthy, and
-            # collapses in the middle with failures that read as the product's.
-            left = self.minutes_left()
-            if left is not None and left < cfg.NEEDS_MINUTES:
-                print(f"   '{self.name}' is up but has about {left:.0f} minute(s) "
-                      f"of its {cfg.TTL_HOURS}h life left, and a full run needs "
-                      f"{cfg.NEEDS_MINUTES}.")
-                print("   Re-deploying to refresh it rather than dying halfway.")
-                # Not a destroy: this tool never tears an environment down —
-                # that belongs to the deployer, which knows about the shared
-                # database and the base-path mappings. Running the deployer
-                # again updates the stack in place, which is what it does for
-                # an environment that already exists.
-                self._deploy_and_wait(key)
-                self.created = True
-                return self
-
-            if left is not None:
-                print(f"   '{self.name}' is already up — reusing it "
-                      f"({left:.0f} minute(s) of life left)")
-            else:
-                print(f"   '{self.name}' is already up — reusing it")
+            print(f"   '{self.name}' is already up — reusing it")
             # A settled stack is not a working environment: a failed deploy can
             # drop the database and still leave UPDATE_COMPLETE behind. Ask it
             # for the retailer list before trusting it.

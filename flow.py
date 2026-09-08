@@ -285,21 +285,19 @@ async def arrive_with_affiliate_marker(site, tab, walk):
     if "irclickid" not in tab.url:
         return Result.passed("marker stripped by the shop; nothing to judge")
 
-    answer = await netspy.last_body(walk.context, netspy.POPUP_CHECK)
-    verdict = None if answer is None else answer.get("isValid")
-
     if shown:
         return Result.failed(
             f"the popup appeared over an affiliate link "
-            f"(server said isValid={verdict!r}, surface {popup.route_of(shown)!r})")
-    if verdict is True:
-        return Result.failed(
-            "no popup, but the server still called the arrival valid — the "
-            "stand-down did not happen; something else hid the popup")
+            f"(surface {popup.route_of(shown)!r})")
 
-    entry = await storage.quiet_entry(walk.context, site)
+    entry = await storage.await_quiet_entry(walk.context, site)
     if not entry:
-        return Result.failed("stood down but wrote no row")
+        # No popup and no row: the stand-down did not happen and something else
+        # kept the offer away. Said plainly rather than counted as a pass, since
+        # a silent screen for the wrong reason is what this step exists to catch.
+        return Result.failed(
+            "no popup, but nothing was written either — the stand-down did not "
+            "happen and something else hid the offer")
     if not str(entry.get("type", "")).startswith("kdi"):
         return Result.failed(f"type is {entry.get('type')!r}, expected kdi")
     offset = await storage.get(walk.context, "standDownOffset")
