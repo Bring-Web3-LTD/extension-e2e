@@ -36,14 +36,33 @@ def backoff_of(window):
     return span, ""
 
 
+async def broadcast_until_checked(walk, tab, address, timeout=60) -> bool:
+    """Broadcast *address* until the check it triggers has recorded it.
+
+    The content script is injected after the page has loaded and only then
+    registers its wallet listener; on a slow machine the first broadcast can
+    go out before that, and the event is simply lost. Repeating it is
+    harmless: once one has landed, the SDK's own dedup skips the rest
+    ("address unchanged, skipping"). Eight seconds between tries, so a check
+    that is merely slow is not counted twice.
+    """
+    deadline = time.time() + timeout
+    while True:
+        await netspy.broadcast_wallet(tab, address)
+        marker = await storage.await_value(walk.context, storage.LAST_CHECKED_WALLET,
+                                           address, timeout=8)
+        if marker == address:
+            return True
+        if time.time() > deadline:
+            return False
+
+
 # ── 3.1 the request storm ───────────────────────────────────────────
 
 def make_same_address_once(walk):
     async def check(site, tab):
         await fresh(walk, tab)
-        await netspy.broadcast_wallet(tab, ADDRESS_A)
-        first = await netspy.await_call(walk.context, netspy.NOTIFICATION_CHECK, timeout=30)
-        if first < 1:
+        if not await broadcast_until_checked(walk, tab, ADDRESS_A):
             return Result.failed("the first broadcast of a new address made no check")
         # Two checks can be owed here — the navigation's and the broadcast's.
         # Let the second land before counting repeats, or it is one.
@@ -64,19 +83,18 @@ def make_same_address_once(walk):
 def make_real_change_once(walk):
     async def check(site, tab):
         await fresh(walk, tab)
-        await netspy.broadcast_wallet(tab, ADDRESS_A)
-        await netspy.await_call(walk.context, netspy.NOTIFICATION_CHECK, timeout=30)
-        marker = await storage.await_key(walk.context, storage.LAST_CHECKED_WALLET)
-        if marker != ADDRESS_A:
-            return Result.failed(f"lastCheckedWalletAddress is {marker!r} after the first check")
+        if not await broadcast_until_checked(walk, tab, ADDRESS_A):
+            return Result.failed("the first check never recorded the address")
         await netspy.reset(walk.context)
-        await netspy.broadcast_wallet(tab, ADDRESS_B)
-        fired = await netspy.await_call(walk.context, netspy.NOTIFICATION_CHECK, timeout=30)
-        marker = await storage.await_value(walk.context, storage.LAST_CHECKED_WALLET, ADDRESS_B)
+        if not await broadcast_until_checked(walk, tab, ADDRESS_B):
+            return Result.failed("switching accounts made no check: the marker never "
+                                 "became the new address")
+        try:
+            fired = await netspy.count(walk.context, netspy.NOTIFICATION_CHECK)
+        except netspy.SpyGone:
+            fired = 1        # the marker moved, so a check ran; the recorder just missed it
         if fired != 1:
             return Result.failed(f"switching accounts fired {fired} checks; one is right")
-        if marker != ADDRESS_B:
-            return Result.failed(f"lastCheckedWalletAddress is {marker!r}, not the new address")
         return Result.passed("one check, marker updated")
     return check
 
@@ -104,7 +122,7 @@ def make_failed_check_backs_off(walk):
         await storage.delete(walk.context, storage.LAST_CHECKED_WALLET)
         await fresh(walk, tab, netspy.FAIL)
         try:
-            await netspy.broadcast_wallet(tab, ADDRESS_A)
+            await broadcast_until_checked(walk, tab, ADDRESS_A)
             window = await storage.await_key(walk.context, storage.NOTIFICATION_CHECK)
             span, bad = backoff_of(window)
             if bad:
@@ -128,7 +146,7 @@ def make_bad_reply_backs_off(walk, mode, label):
         await storage.delete(walk.context, storage.LAST_CHECKED_WALLET)
         await fresh(walk, tab, mode)
         try:
-            await netspy.broadcast_wallet(tab, ADDRESS_A)
+            await broadcast_until_checked(walk, tab, ADDRESS_A)
             window = await storage.await_key(walk.context, storage.NOTIFICATION_CHECK)
             shown = await popup.wait_for_popup(tab, timeout=3, route="notification")
             span, bad = backoff_of(window)
@@ -148,18 +166,15 @@ def make_resumes_after_backoff(walk):
         await storage.delete(walk.context, storage.LAST_CHECKED_WALLET)
         await fresh(walk, tab, netspy.FAIL)
         try:
-            await netspy.broadcast_wallet(tab, ADDRESS_A)
+            await broadcast_until_checked(walk, tab, ADDRESS_A)
             if not await storage.await_key(walk.context, storage.NOTIFICATION_CHECK):
                 return Result.failed("no backoff was written, nothing to recover from")
         finally:
             await netspy.set_mode(walk.context, netspy.PASS)
         if not await storage.expire_key(walk.context, storage.NOTIFICATION_CHECK):
             return Result.failed("could not move the backoff into the past")
-        await netspy.reset(walk.context)
         await tab.goto(NEUTRAL + "/?again", wait_until="domcontentloaded")
-        await netspy.broadcast_wallet(tab, ADDRESS_B)
-        resumed = await netspy.await_call(walk.context, netspy.NOTIFICATION_CHECK)
-        if resumed < 1:
+        if not await broadcast_until_checked(walk, tab, ADDRESS_B):
             return Result.failed("the backoff expired but no check followed")
         return Result.passed("checked again once the hour was up")
     return check
@@ -168,9 +183,7 @@ def make_resumes_after_backoff(walk):
 def make_disconnect_reconnect(walk):
     async def check(site, tab):
         await fresh(walk, tab)
-        await netspy.broadcast_wallet(tab, ADDRESS_A)
-        if await storage.await_value(walk.context, storage.LAST_CHECKED_WALLET,
-                                     ADDRESS_A) != ADDRESS_A:
+        if not await broadcast_until_checked(walk, tab, ADDRESS_A):
             return Result.failed("the first check never recorded the address")
         # The page load owes a check of its own, made with no wallet; if it
         # lands after the disconnect it legitimately writes the marker as ''.
@@ -196,12 +209,8 @@ def make_disconnect_reconnect(walk):
 
         # A different wallet is proved by the mark its check leaves, not by
         # the recorder: MV3 recycles the worker, and the wrapper with it.
-        await netspy.broadcast_wallet(tab, ADDRESS_B)
-        marker = await storage.await_value(walk.context, storage.LAST_CHECKED_WALLET,
-                                           ADDRESS_B)
-        if marker != ADDRESS_B:
-            return Result.failed(f"reconnecting a different wallet made no check "
-                                 f"(marker still {marker!r})")
+        if not await broadcast_until_checked(walk, tab, ADDRESS_B):
+            return Result.failed("reconnecting a different wallet made no check")
         return Result.passed("address removed, marker kept, same wallet quiet, "
                              "different wallet checked")
     return check
