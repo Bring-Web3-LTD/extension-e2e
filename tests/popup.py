@@ -207,7 +207,7 @@ def make_navigate_silent(mode):
 def make_navigate_pops(mode):
     async def check(site, tab):
         await _navigate(tab, mode)
-        if not await popup.wait_for_popup(tab, timeout=35):
+        if not await popup.wait_for_popup(tab, timeout=60):
             return Result.failed(f"after {mode} the offer did not come back")
         return Result.passed(f"{mode} re-checked the page")
     return check

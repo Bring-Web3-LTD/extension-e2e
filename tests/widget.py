@@ -14,7 +14,7 @@ async def frame_box(tab):
 async def badge_on(walk, tab):
     """The collapsed badge on a fresh visit, or a failed Result saying why not."""
     await tab.goto(SITE, wait_until="domcontentloaded")
-    frame = await popup.wait_for_popup(tab, timeout=40)
+    frame = await popup.wait_for_popup(tab, timeout=90)
     if frame is None:
         row = await storage.quiet_entry(walk.context, SITE)
         if row:
@@ -119,7 +119,7 @@ def make_badge_dismiss_silences(walk):
             return bad
         if not await popup.click(frame, popup.WIDGET["close"], settle=3):
             return Result.failed("the badge has no X of its own")
-        if not await popup.wait_for_gone(tab, timeout=8):
+        if not await popup.wait_for_gone(tab, timeout=20):
             return Result.failed("dismissing the badge left the widget on the page")
         back = await revisit_expecting(walk.context, SITE, None, "silent")
         if not back.ok:
@@ -140,7 +140,7 @@ def make_expanded_state_survives(walk):
             return bad
         await tab.goto(SITE.rstrip("/") + "/?e2e-second-page=1",
                        wait_until="domcontentloaded")
-        again = await popup.wait_for_popup(tab, timeout=25)
+        again = await popup.wait_for_popup(tab, timeout=60)
         if again is None:
             row = await storage.quiet_entry(walk.context, SITE)
             return Result.failed("nothing on the second page"

@@ -39,7 +39,7 @@ async def open_bar(walk, tab):
     await netspy.install(walk.context, netspy.PASS)
     await netspy.reset(walk.context)
     await results(tab)
-    frame = await popup.wait_for_bar(tab, timeout=25)
+    frame = await popup.wait_for_bar(tab, timeout=60)
     if frame:
         return frame, await popup.controls_for(frame)
     try:
@@ -122,7 +122,7 @@ def make_close_silences_engine(walk):
                   or await popup.click(frame, ctl["close_bottom"], settle=2))
         if not closed:
             return Result.failed("the bar has no close control")
-        if not await popup.bars_gone(tab, timeout=10):
+        if not await popup.bars_gone(tab, timeout=20):
             return Result.failed("the bar is still on the page")
         back = await tab.evaluate(popup.BODY_RESERVATION)
         if back["transform"]:

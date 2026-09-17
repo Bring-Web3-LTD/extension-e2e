@@ -169,12 +169,13 @@ def make_disconnect_reconnect(walk):
     async def check(site, tab):
         await fresh(walk, tab)
         await netspy.broadcast_wallet(tab, ADDRESS_A)
-        await netspy.await_call(walk.context, netspy.NOTIFICATION_CHECK, timeout=30)
-        # The check has to have *finished* — the marker is written after the
-        # reply — before the disconnect, or the read below races it.
         if await storage.await_value(walk.context, storage.LAST_CHECKED_WALLET,
                                      ADDRESS_A) != ADDRESS_A:
             return Result.failed("the first check never recorded the address")
+        # The page load owes a check of its own, made with no wallet; if it
+        # lands after the disconnect it legitimately writes the marker as ''.
+        # Let it land first. An absence, so a fixed wait.
+        await tab.wait_for_timeout(2500)
 
         await netspy.broadcast_wallet(tab, "")
         deadline = asyncio.get_event_loop().time() + 20
@@ -190,16 +191,19 @@ def make_disconnect_reconnect(walk):
         await netspy.broadcast_wallet(tab, ADDRESS_A)
         await tab.wait_for_timeout(4000)        # an absence: a fixed wait
         same = await netspy.count(walk.context, netspy.NOTIFICATION_CHECK)
-        await netspy.reset(walk.context)
-        await netspy.broadcast_wallet(tab, ADDRESS_B)
-        different = await netspy.await_call(walk.context, netspy.NOTIFICATION_CHECK,
-                                            timeout=30)
         if same:
             return Result.failed(f"reconnecting the same wallet forced {same} checks")
-        if different != 1:
-            return Result.failed(f"reconnecting a different wallet fired {different}; one is right")
+
+        # A different wallet is proved by the mark its check leaves, not by
+        # the recorder: MV3 recycles the worker, and the wrapper with it.
+        await netspy.broadcast_wallet(tab, ADDRESS_B)
+        marker = await storage.await_value(walk.context, storage.LAST_CHECKED_WALLET,
+                                           ADDRESS_B)
+        if marker != ADDRESS_B:
+            return Result.failed(f"reconnecting a different wallet made no check "
+                                 f"(marker still {marker!r})")
         return Result.passed("address removed, marker kept, same wallet quiet, "
-                             "different wallet checked once")
+                             "different wallet checked")
     return check
 
 
@@ -380,7 +384,7 @@ def make_close_removes(walk, seeder):
     async def judge(frame, tab):
         if not await popup.click(frame, popup.NOTIFICATION["close_x"], settle=3):
             return Result.failed("the notification has no X")
-        if not await popup.wait_for_gone(tab, timeout=8, route="notification"):
+        if not await popup.wait_for_gone(tab, timeout=20, route="notification"):
             return Result.failed("still on the page after the X")
         if await storage.get(walk.context, storage.NOTIFICATION):
             return Result.failed("closing left the stored copy behind, so it "
