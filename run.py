@@ -1,62 +1,54 @@
 #!/usr/bin/env python
-"""Run the extension end-to-end suite, from nothing to a verdict.
-
-    python run.py                       everything, on a fresh or reused env
-    python run.py -k notification       one area
-    python run.py -m popup              one marker
-    python run.py --headless -n 4       how CI runs it
-    python run.py --skip-env            the environment is already up
-
-The environment is brought up here rather than inside pytest on purpose: under
-`-n` every worker is a separate process, and a session fixture would have each
-of them deploy, then find the others' half-built stack.
-"""
 import argparse
 import asyncio
 import os
-import subprocess
 import sys
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from bring import config as cfg              # noqa: E402
-from bring import preflight                  # noqa: E402
-from bring.env import Environment, EnvError, find_manifest_dir   # noqa: E402
+from bring import config as cfg, preflight, retailers, storage      # noqa: E402
+from bring.browser import extension_browser                         # noqa: E402
+from bring.env import Environment, EnvError, find_manifest_dir      # noqa: E402
+from bring.walk import Walk                                         # noqa: E402
+from tests import (followups, notifications, offerbar, optout,      # noqa: E402
+                   popup, standdown, wallet, widget)
 
-JUNIT = ROOT / "junit.xml"
+# In order. The first three share the three shop tabs; the rest open their own.
+SHARED_TABS = ("popup", "optout", "standdown")
+ACTS = {
+    "popup": popup.act,
+    "optout": optout.act,
+    "standdown": standdown.act,
+    "followups": followups.act,
+    "wallet": wallet.act,
+    "widget": widget.act,
+    "offerbar": offerbar.act,
+    "notifications": notifications.act,
+}
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description=__doc__,
+    p = argparse.ArgumentParser(description="Walk the QA plan against a live environment.",
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--env", default=cfg.ENV_NAME,
                    help=f"environment name (default: {cfg.ENV_NAME})")
     p.add_argument("--platform", default=cfg.PLATFORM,
                    help=f"wallet platform whose key builds it (default: {cfg.PLATFORM})")
-    p.add_argument("-n", "--workers", default="4",
-                   help="tests in parallel; each gets its own browser (default: 4)")
     p.add_argument("--headless", action="store_true",
                    help="Chrome's new headless — the only one that loads extensions")
-    p.add_argument("-k", default=None, help="pytest -k expression")
-    p.add_argument("-m", default=None, help="pytest -m marker expression")
+    p.add_argument("--only", action="append", choices=sorted(ACTS),
+                   help="run one act (repeatable); default: all, in order")
+    p.add_argument("--retailers", default=None,
+                   help="comma-separated shops instead of the default three")
     p.add_argument("--reuse-extension", action="store_true",
                    help="skip the S3 download and use the one already unpacked")
     p.add_argument("--skip-env", action="store_true",
                    help="assume the environment is up; do not talk to AWS")
     p.add_argument("--skip-preflight", action="store_true",
                    help="do not check the retailers are live before running")
-    p.add_argument("rest", nargs=argparse.REMAINDER,
-                   help="anything else is passed to pytest")
     return p.parse_args()
-
-
-def _has_xdist() -> bool:
-    import importlib.util
-
-    return importlib.util.find_spec("xdist") is not None
 
 
 def prepare_extension(env, into: Path, reuse: bool) -> Path:
@@ -67,46 +59,46 @@ def prepare_extension(env, into: Path, reuse: bool) -> Path:
     return env.download_extension(into)
 
 
-def summarise(exit_code: int) -> int:
-    """Print the one line the release decision is actually made on."""
-    print("\n" + "=" * 62)
-    if not JUNIT.exists():
-        print("NO RESULTS — the suite did not get as far as running")
-        print("=" * 62)
-        return exit_code or 1
+async def walk_through(extension: Path, only, headless: bool) -> int:
+    profile = ROOT / "profiles" / f"walk-{os.getpid()}"
+    sites = retailers.sites()
+    chosen = [name for name in ACTS if not only or name in only]
 
-    root = ET.parse(JUNIT).getroot()
-    suites = root.findall("testsuite") or [root]
-    total = failures = errors = skipped = 0
-    broken = []
-    for suite in suites:
-        total += int(suite.get("tests", 0))
-        failures += int(suite.get("failures", 0))
-        errors += int(suite.get("errors", 0))
-        skipped += int(suite.get("skipped", 0))
-        for case in suite.iter("testcase"):
-            bad = case.find("failure") if case.find("failure") is not None else case.find("error")
-            if bad is not None:
-                message = (bad.get("message") or "").splitlines()[0][:140]
-                broken.append(f"{case.get('classname', '')}.{case.get('name')}\n      {message}")
+    print(f"Shops:     {', '.join(retailers.label(s) for s in sites)}   "
+          f"(one browser, {len(sites)} tabs)")
+    print(f"Acts:      {', '.join(chosen)}")
 
-    passed = total - failures - errors - skipped
-    if failures or errors:
-        print(f"FAIL — {failures + errors} of {total} checks failed "
-              f"({passed} passed, {skipped} skipped)")
-        print("-" * 62)
-        for line in broken:
-            print(f"  x {line}")
-        print("-" * 62)
-        print("Screenshots, storage dumps and traces: ./artifacts/")
-    elif passed == 0:
-        print(f"NOTHING ASSERTED — {skipped} skipped, none ran")
+    async with extension_browser(extension, profile, headless=headless) as context:
+        # Refuse to walk on an extension that never got its retailer list:
+        # every step after this would say "no popup" about nothing.
+        if not await storage.settled(context, timeout=90):
+            print("\nCannot walk: the extension never downloaded its retailer list "
+                  "(relevantDomains is empty after 90s). The environment is up but "
+                  "not answering, or the first-run fetch failed — nothing here "
+                  "would be about the product.")
+            return 3
+
+        walk = Walk(context, sites)
+        shared = [name for name in chosen if name in SHARED_TABS]
+        if shared:
+            await walk.open_tabs()
+            try:
+                for name in shared:
+                    await ACTS[name](walk)
+            finally:
+                await walk.close_tabs()
+        for name in chosen:
+            if name not in SHARED_TABS:
+                await ACTS[name](walk)
+
+    print("\n" + "=" * 64)
+    if walk.failures:
+        print(f"FAIL - {walk.failures} of {walk.steps} step(s) did not do what they "
+              f"should. Screenshots and storage dumps: ./artifacts/")
     else:
-        print(f"PASS — {passed} of {total} checks passed"
-              + (f", {skipped} skipped" if skipped else ""))
-        print("Safe to release as far as this suite can tell.")
-    print("=" * 62)
-    return exit_code
+        print(f"PASS - all {walk.steps} steps did the right thing")
+    print("=" * 64)
+    return 1 if walk.failures else 0
 
 
 def main() -> int:
@@ -115,9 +107,10 @@ def main() -> int:
     os.environ["BRING_PLATFORM"] = args.platform
     if args.headless:
         os.environ["BRING_HEADLESS"] = "1"
+    if args.retailers:
+        os.environ["BRING_RETAILERS"] = args.retailers
 
     extension_root = ROOT / "extension" / args.env
-
     if args.skip_env:
         print(f"Skipping the environment check — assuming '{args.env}' is up")
         extension = find_manifest_dir(extension_root)
@@ -135,39 +128,18 @@ def main() -> int:
 
     if not args.skip_preflight:
         # A retailer that has left this environment's list makes every popup
-        # test fail with "no popup" — correct behaviour reported as a bug, and
+        # step fail with "no popup" — correct behaviour reported as a bug, and
         # twenty minutes spent to get there. Ask first.
         print(f"Checking the retailers are live on '{args.env}':")
         try:
-            results = asyncio.run(preflight.verify(
-                extension, headless=bool(args.headless)))
+            results = asyncio.run(preflight.verify(extension, headless=bool(args.headless)))
             preflight.report(results)
         except preflight.TargetError as e:
             print(f"\nCannot test: {e}", file=sys.stderr)
             return 2        # the run was asked for something impossible
         print()
 
-    command = [sys.executable, "-m", "pytest", f"--junitxml={JUNIT}"]
-    if args.workers and args.workers != "0":
-        if _has_xdist():
-            # Plain `load`, not `loadgroup`: retailers are meant to mix within a
-            # worker so its browser holds one `quietDomains` list covering
-            # several shops, which is the situation a real user is in.
-            command += ["-n", args.workers]
-        else:
-            # Serial still answers the question, just slower. Failing here
-            # would mean no verdict at all over a missing convenience.
-            print("pytest-xdist is not installed — running serially "
-                  "(pip install pytest-xdist)")
-    if args.k:
-        command += ["-k", args.k]
-    if args.m:
-        command += ["-m", args.m]
-    command += [a for a in args.rest if a != "--"]
-
-    JUNIT.unlink(missing_ok=True)
-    result = subprocess.run(command, cwd=ROOT)
-    return summarise(result.returncode)
+    return asyncio.run(walk_through(extension, args.only, bool(args.headless)))
 
 
 if __name__ == "__main__":

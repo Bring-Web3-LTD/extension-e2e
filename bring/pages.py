@@ -1,68 +1,5 @@
-import asyncio
 import json
 import re
-
-BASE_STYLE = "body{font-family:system-ui;padding:40px;line-height:1.6}"
-
-
-def plain(title: str = "Test retailer") -> str:
-    """An ordinary, quiet page. The baseline the other variants deviate from."""
-    return f"""<!doctype html><html><head><title>{title}</title>
-<style>{BASE_STYLE}</style></head>
-<body><h1>{title}</h1><p id="content">Product listing.</p></body></html>"""
-
-
-def hydration_wipe(delay_ms: int = 1200) -> str:
-    return f"""<!doctype html><html><head><title>Hydrating retailer</title>
-<style>{BASE_STYLE}</style></head>
-<body><h1>Hydrating retailer</h1><p id="content">Server markup.</p>
-<script>
-  window.addEventListener('load', () => setTimeout(() => {{
-    // Replace the documentElement's children the way a hydrating framework
-    // does — not innerHTML on body, which some frameworks leave alone.
-    document.body.replaceChildren();
-    const h = document.createElement('h1');
-    h.textContent = 'Hydrating retailer';
-    const p = document.createElement('p');
-    p.id = 'content';
-    p.textContent = 'Client markup.';
-    document.body.append(h, p);
-    window.__wiped = true;
-  }}, {delay_ms}));
-</script></body></html>"""
-
-
-def with_same_origin_frame() -> str:
-    return f"""<!doctype html><html><head><title>Framed retailer</title>
-<style>{BASE_STYLE}</style></head>
-<body><h1>Framed retailer</h1>
-<iframe id="own-frame" src="/e2e-inner" width="600" height="200"></iframe>
-</body></html>"""
-
-
-def with_third_party_frame() -> str:
-    return f"""<!doctype html><html><head><title>Retailer with widget</title>
-<style>{BASE_STYLE}</style></head>
-<body><h1>Retailer with widget</h1>
-<iframe id="third-party" src="https://www.example.com/" width="400" height="150"></iframe>
-</body></html>"""
-
-
-def spa(routes: int = 2) -> str:
-    return f"""<!doctype html><html><head><title>SPA retailer</title>
-<style>{BASE_STYLE}</style></head>
-<body><h1>SPA retailer</h1><p id="content">Route 0</p>
-<script>
-  window.__go = (n) => {{
-    history.pushState({{}}, '', '/e2e-route-' + n);
-    document.getElementById('content').textContent = 'Route ' + n;
-    window.dispatchEvent(new PopStateEvent('popstate'));
-  }};
-</script></body></html>"""
-
-
-INNER = f"""<!doctype html><html><head><title>Inner</title>
-<style>{BASE_STYLE}</style></head><body><p>Inner page.</p></body></html>"""
 
 
 async def serve(target, url_glob: str, html: str, *, status: int = 200):
@@ -73,14 +10,28 @@ async def serve(target, url_glob: str, html: str, *, status: int = 200):
     await target.route(url_glob, handler)
 
 
-async def serve_site(target, origin: str, pages: dict, default: str):
-    async def handler(route):
-        path = route.request.url[len(origin):].split("?")[0] or "/"
-        body = pages.get(path, default)
-        await route.fulfill(status=200, content_type="text/html; charset=utf-8",
-                            body=body)
+#: Hosts that mean the user is mid-affiliate-hop — a coupon or deals site sent
+#: them here and already owns the click. Taken from the backend's own
+#: `WILDFIRE_STANDDOWN_DOMAINS` (utils/affiliateIdentifiers.ts), which is what
+#: the server compiles into the stand-down regex the SDK matches the redirect
+#: chain against.
+#:
+#: This is the case the feature was built for. A click id sitting on the final
+#: URL is the other half of the same list and easier to fake, but it is not the
+#: hijack that was actually happening: somebody arriving from a coupon site,
+#: with the popup appearing over a click that was already paid for.
+STANDDOWN_HOSTS = (
+    "anrdoezrs.net",
+    "click.linksynergy.com",
+    "awin1.com",
+    "dpbolvw.net",
+    "jdoqocy.com",
+)
 
-    await target.route(f"{origin}/**", handler)
+
+def coupon_hop(shop: str, host: str = None, index: int = 0) -> str:
+    host = host or STANDDOWN_HOSTS[index % len(STANDDOWN_HOSTS)]
+    return f"https://{host}/click-e2e?url={shop}"
 
 
 def exactly(url: str):
@@ -103,14 +54,3 @@ async def redirect_through(target, entry_url: str, hop_url: str,
     await target.route(exactly(hop_url), bounce)
 
 
-async def wait_for(page, expression: str, timeout: float = 10) -> bool:
-    """Poll a JS expression in the page until it is true, or give up."""
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        try:
-            if await page.evaluate(f"() => !!({expression})"):
-                return True
-        except Exception:
-            pass
-        await asyncio.sleep(0.2)
-    return False

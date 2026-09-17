@@ -1,7 +1,6 @@
 import asyncio
 
 IFRAME_ID_PREFIX = "bringweb3-iframe"
-OFFERBAR_CONTAINER_ID = "bringweb3-offerbar-container"
 
 # Where the iframe is served from: its own CloudFront host in a deployed
 # environment, or a dev server when somebody is running one locally. Matched on
@@ -131,13 +130,6 @@ OPTOUT = {
     "forever": "#durationOption2",
 }
 
-# What the popup sends for each duration, so a test can say which window it
-# expects without restating the numbers the iframe already owns.
-OPTOUT_WINDOWS_MS = {
-    "for_24h": 24 * 60 * 60 * 1000,
-    "for_30d": 30 * 24 * 60 * 60 * 1000,
-    "forever": 999_999_999_999_999,
-}
 
 # Any one of these means the app has finished mounting something a test can
 # act on. Kept as one selector list rather than a per-surface check because
@@ -256,12 +248,7 @@ async def expand_widget(frame, *, timeout: float = 15) -> bool:
 
 
 async def wait_for_popup(page, timeout: float = 30, route: str = None):
-    """The Bring frame once it is on screen and has rendered, or None.
-
-    None rather than an exception: "no popup appeared" is a finding the test
-    should state in its own words, with the retailer named, not a timeout
-    traceback from inside a helper.
-    """
+    """The Bring frame once it is on screen and has rendered, or None."""
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         for frame in frames(page, route):
@@ -413,6 +400,32 @@ async def visible(frame, selector: str) -> bool:
         return bool(element) and await element.is_visible()
     except Exception:
         return False
+
+
+async def await_nonempty_text(frame, selector: str, timeout: float = 20) -> str:
+    """The element's text once there is some, or "" at the end.
+
+    For content that arrives after its container does — the deal terms are a
+    markdown fetch that lands a moment after the terms view opens. Reading at
+    once found the box and called it empty.
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        seen = (await text(frame, selector)).strip()
+        if seen:
+            return seen
+        await asyncio.sleep(0.25)
+    return ""
+
+
+async def await_visible(frame, selector: str, timeout: float = 20) -> bool:
+    """Whether the element turns up within *timeout*, checked as it goes."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        if await visible(frame, selector):
+            return True
+        await asyncio.sleep(0.25)
+    return False
 
 
 async def text(frame, selector: str) -> str:

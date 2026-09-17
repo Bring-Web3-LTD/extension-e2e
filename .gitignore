@@ -4,7 +4,6 @@
 .venv/
 __pycache__/
 *.pyc
-.pytest_cache/
 
 # Everything a run produces. Traces and screenshots belong to one run and to
 # the machine that made it — CI uploads them as build artifacts instead.
@@ -13,6 +12,4 @@ artifacts-repro/
 profiles/
 extension/
 *.log
-report.json
-junit.xml
-timing.txt
+*.err

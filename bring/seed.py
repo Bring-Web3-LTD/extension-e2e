@@ -67,8 +67,15 @@ VARIANTS = {
         "wallet": False,
         "purchases": [{"status": "APPROVED", "reported": None, "amount": 0.42}],
     },
-    # Same, plus something already approved long enough ago to be expiring:
-    # the deadline line appears.
+    # Same, plus an older reward that is not yet expiring: the notification
+    # adds a Total line (0.73) and still asks to Connect.
+    #
+    # The plan's table describes this variant with a deadline and a Connect
+    # button. The server cannot produce that: a deadline appears only once a
+    # READY purchase is 122 days old (`REMINDER_PURCHASE_STATUSES: ['READY']`,
+    # `checkIfInRemindingPeriod`), and a READY purchase in that period is also
+    # the claimable sum, which turns the button into Claim. So "expiring but
+    # not claimable" does not exist; this is the walletless_2 the product has.
     "walletless_2": {
         "wallet": False,
         "purchases": [
@@ -77,14 +84,26 @@ VARIANTS = {
              "ready_age_days": 30},
         ],
     },
-    # New *and* claimable: the button becomes Claim.
+    # New *and* claimable, with the claimable reward nearing expiration: the
+    # deadline line appears and the button becomes Claim. The READY row is
+    # already reported, or the server would count it as new as well and show
+    # one 0.97 sum with nothing claimable; and it is 130 days old, past the
+    # 122-day reminder period, or there is no deadline (see walletless_4).
     "walletless_3": {
         "wallet": False,
         "purchases": [
             {"status": "APPROVED", "reported": None, "amount": 0.42},
-            {"status": "READY", "reported": None, "amount": 0.55,
-             "ready_age_days": 30},
+            {"status": "READY", "reported": "APPROVED", "amount": 0.55,
+             "ready_age_days": 130},
         ],
+    },
+    # Not a variant of the plan's table: one new purchase whose amount sits in
+    # the 0.01–0.1 band, where the server keeps the first significant digit
+    # plus one and truncates (`formatToFirstNonZeroPlus`: 0.0457 → 0.045).
+    # Everything else about it is walletless_1.
+    "rounding": {
+        "wallet": False,
+        "purchases": [{"status": "APPROVED", "reported": None, "amount": 0.0457}],
     },
     # Claimable only — nothing new — which is what puts Stop Reminding on the
     # notification alongside Claim.
@@ -99,8 +118,17 @@ VARIANTS = {
         "wallet": False,
         "reminder_days": 8,
         "purchases": [
+            # 130 days, and the number is the whole variant. The reminder path
+            # opens only once `approvalTime + REMINDER_PERIOD_MS < now`, and
+            # that period is 122 days (`notification/config.ts`) — the four
+            # months a wallet-less reward waits before it starts nagging. At
+            # the 30 days this used to carry, `checkIfInRemindingPeriod`
+            # returned false, the reminder branch never ran, and the server
+            # answered showNotification=False on correctly seeded rows. Short
+            # of REWARD_EXPIRATION_MS (183 days) as well, or the reward is
+            # expired instead of expiring.
             {"status": "READY", "reported": "APPROVED", "amount": 0.55,
-             "ready_age_days": 30},
+             "ready_age_days": 130},
         ],
     },
 }

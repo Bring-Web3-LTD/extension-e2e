@@ -1,6 +1,5 @@
 import tempfile
 from pathlib import Path
-
 from bring import netspy, popup, retailers
 from bring.browser import extension_browser
 from bring.storage import settled

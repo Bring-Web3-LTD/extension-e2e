@@ -12,23 +12,6 @@ NOTIFICATION = "notification"
 NOTIFICATION_CHECK = "notificationCheck"
 LAST_CHECKED_WALLET = "lastCheckedWalletAddress"
 WALLET_ADDRESS = "walletAddress"
-DEBUG_MODE = "debugMode"
-
-# Every key the SDK writes, so a test can assert on all of them rather than on
-# the two that happen to be interesting today. Mirrors the table at the end of
-# QA_TEST_PLAN.md section 4.
-ALL_KEYS = (
-    "id", "walletAddress", "popupEnabled", "disableReminders", "optOut",
-    "envName", "relevantDomains", "relevantDomainsCheck", "domainsTypes",
-    "postPurchaseUrls", "quietDomainsMaxLength", "standDownOffset",
-    "redirectsWhitelist", "quietDomains", "portalRelevantDomains",
-    "lastActivation", "notification", "notificationCheck", "migrationVersion",
-    "extensionMemoryTest", "optOutDomains", "debugMode",
-    "lastCheckedWalletAddress",
-)
-
-# Written by a removed feature. Its presence after an upgrade is the finding.
-DEPRECATED_KEYS = ("postPurchaseUrls", "optOutDomains")
 
 
 async def _call(context, expression: str, timeout: float = 10):
@@ -42,12 +25,6 @@ async def get(context, key: str):
 
 
 async def set(context, key: str, value) -> None:
-    """Write a value the extension will actually read back.
-
-    Goes through `bringCache.set`, which updates the in-memory cache and
-    `chrome.storage.local` together. Writing only the latter leaves the SDK
-    reading a stale cached value for the rest of the session.
-    """
     await _call(context, f"bringCache.set({json.dumps(key)}, {json.dumps(value)})")
 
 
@@ -91,20 +68,6 @@ async def settled(context, timeout: float = 45) -> bool:
     return False
 
 
-async def forget(context, url: str) -> bool:
-    rows = await quiet_domains(context)
-    keep = [r for r in rows if not (isinstance(r, dict) and entries_for([r], url))]
-    if len(keep) == len(rows):
-        return False
-    await set(context, QUIET_DOMAINS, keep)
-    return True
-
-
-async def reset(context) -> None:
-    for key in (QUIET_DOMAINS, OPT_OUT):
-        await delete(context, key)
-
-
 # ── quiet domains ───────────────────────────────────────────────────
 
 def normalise(host_or_url: str) -> str:
@@ -113,29 +76,45 @@ def normalise(host_or_url: str) -> str:
     return host.removeprefix("*.").removeprefix("www.")
 
 
-def entries_for(entries, url: str) -> list:
+def is_live(entry, now: int = None) -> bool:
+    span = (entry or {}).get("time")
+    if not isinstance(span, (list, tuple)) or len(span) != 2:
+        return False
+    start, end = span
+    if not all(isinstance(v, (int, float)) for v in (start, end)):
+        return False
+    now = now if now is not None else int(time.time() * 1000)
+    return start <= now <= end
+
+
+def entries_for(entries, url: str, live_only: bool = False) -> list:
     host = normalise(url)
     if not host:
         return []
+    now = int(time.time() * 1000)
     found = []
     for entry in entries or []:
-        # The list is read straight out of the extension, and the whole point
-        # of several of these tests is to put bad data in it. A null or a bare
-        # string in there is a finding for whoever asserts on it, not a reason
-        # for this helper to raise.
         if not isinstance(entry, dict):
             continue
         domain = normalise(str(entry.get("domain", "")))
         if not domain:
             continue
         if domain == host or host.endswith("." + domain):
+            if live_only and not is_live(entry, now):
+                continue
             found.append(entry)
     return found
 
 
 def entry_for(entries, url: str, type_prefix: str = None):
-    """The row covering *url*, or None. `getQuietDomain` returns the first."""
-    found = entries_for(entries, url)
+    """The row the extension would obey for *url*, or None.
+
+    Expired rows are skipped, as `getQuietDomain` skips them. Counting a dead
+    row as a silence is how "the popup came back on a shop which is still
+    silenced" was reported against an extension that had correctly noticed the
+    window had ended.
+    """
+    found = entries_for(entries, url, live_only=True)
     if type_prefix:
         found = [e for e in found if str(e.get("type", "")).startswith(type_prefix)]
     return found[0] if found else None
@@ -160,7 +139,7 @@ async def quiet_entry(context, url: str, type_prefix: str = None):
     return entry_for(await quiet_domains(context), url, type_prefix)
 
 
-async def await_key(context, key: str, timeout: float = 8):
+async def await_key(context, key: str, timeout: float = 30):
     """A saved value, once the extension has actually written it.
 
     The same race as `await_quiet_entry`, one level up. A wallet broadcast does
@@ -179,7 +158,23 @@ async def await_key(context, key: str, timeout: float = 8):
         await asyncio.sleep(0.2)
 
 
-async def await_quiet_entry(context, url: str, timeout: float = 4,
+async def await_value(context, key: str, expected, timeout: float = 30):
+    """A saved value once it *equals* `expected`, or whatever it is at the end.
+
+    `await_key` waits for the key to hold anything, which is the wrong question
+    when it already holds the previous value and the point is that it changes
+    — an address switch, say. That returned the old address on the first poll
+    and reported the switch as not having happened.
+    """
+    deadline = time.time() + timeout
+    while True:
+        value = await get(context, key)
+        if value == expected or time.time() >= deadline:
+            return value
+        await asyncio.sleep(0.2)
+
+
+async def await_quiet_entry(context, url: str, timeout: float = 20,
                             type_prefix: str = None):
     """The shop's quiet row, once the extension has actually written it.
 
@@ -200,24 +195,46 @@ async def await_quiet_entry(context, url: str, timeout: float = 4,
         await asyncio.sleep(0.2)
 
 
+async def await_quiet_phase(context, url: str, phase: str,
+                            timeout: float = 20):
+    """The shop's row once it reads *phase*, or the row as it stands at the end.
+
+    `await_quiet_entry` waits for a row to exist, which is the wrong condition
+    whenever one is already there and the point is that it *changes* — an
+    activation dismissed back to `quiet`, say. It returns the stale row on the
+    first poll, and the test reports the value it was about to stop being.
+    """
+    deadline = time.time() + timeout
+    while True:
+        entry = entry_for(await quiet_domains(context), url)
+        if (entry or {}).get("phase") == phase or time.time() >= deadline:
+            return entry
+        await asyncio.sleep(0.2)
+
+
+async def await_rows(context, urls, timeout: float = 30) -> list:
+    """Wait until every url in *urls* has a row, then return what is missing.
+
+    Several tabs closing at once each write the whole list back, and the writes
+    land one after another rather than together. A flat sleep either passes
+    before the last one has landed — reporting a lost row that was merely late
+    — or spends its whole budget on every healthy run.
+    """
+    deadline = time.time() + timeout
+    while True:
+        rows = await quiet_domains(context)
+        missing = [u for u in urls if not entries_for(rows, u)]
+        if not missing or time.time() >= deadline:
+            return missing
+        await asyncio.sleep(0.25)
+
+
 # ── moving the clock ────────────────────────────────────────────────
 
 def past(span=None):
     """A timestamp range that ended a minute ago."""
     now = int(time.time() * 1000)
     return [now - 7200_000, now - 60_000]
-
-
-async def expire_quiet(context, url: str) -> bool:
-    rows = await quiet_domains(context)
-    moved = False
-    for entry in rows:
-        if isinstance(entry, dict) and entries_for([entry], url):
-            entry["time"] = past()
-            moved = True
-    if moved:
-        await set(context, QUIET_DOMAINS, rows)
-    return moved
 
 
 async def expire_key(context, key: str) -> bool:

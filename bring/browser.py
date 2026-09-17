@@ -196,7 +196,3 @@ def current_worker(context):
     return None
 
 
-async def extension_id(context) -> str:
-    """The id Chrome gave this unpacked extension."""
-    worker = await wake_worker(context)
-    return worker.url.split("/")[2]

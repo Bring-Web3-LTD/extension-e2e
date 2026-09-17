@@ -16,18 +16,24 @@ on:
         required: true
         default: 'qa-extension'
       retailers:
-        description: 'Shops to test, comma separated (blank = the default four)'
+        description: 'Shops to test, comma separated (blank = the default three)'
         required: false
         default: ''
-      scope:
+      only:
         description: 'How much to run'
         required: true
         default: 'everything'
         type: choice
         options:
           - everything
-          - popup and widget only
-          - the walk only
+          - popup
+          - optout
+          - standdown
+          - followups
+          - wallet
+          - widget
+          - offerbar
+          - notifications
 
 permissions:
   id-token: write        # OIDC to AWS
@@ -35,12 +41,11 @@ permissions:
 
 jobs:
   check:
-    name: Everything, against a fresh environment
+    name: The walk, against a fresh environment
     runs-on: ubuntu-latest
     timeout-minutes: 75
 
     env:
-
       BRING_ENV_NAME: ${{ github.event.inputs.environment_name }}
       BRING_BACKEND_BRANCH: ${{ github.event.inputs.backend_branch }}
       BRING_FRONTEND_BRANCH: ${{ github.event.inputs.frontend_branch }}
@@ -69,9 +74,8 @@ jobs:
           aws-region: eu-central-1
           role-session-name: extension-e2e
 
-      # Only needed to seed the notification variants. Without it those tests
-      # skip with a reason and everything else runs, so it is optional rather
-      # than a hard requirement.
+      # Only needed to seed the notification variants. Without it those steps
+      # say why they could not run and everything else runs.
       #
       # The key is read from `env`, not tested directly in `if`. The `secrets`
       # context is not available to an `if` expression, and the failure is not
@@ -94,103 +98,76 @@ jobs:
             echo "DB_SSH_KEY_PATH=$HOME/.ssh/bring-db.pem"
           } >> "$GITHUB_ENV"
 
-      # The environment is brought up once, here, and reused by both runs
-      # below. Deploying it twice would mean waiting out the domain caches
-      # twice for no gain.
-      - name: The suite
-        id: suite
-        if: ${{ github.event.inputs.scope != 'the walk only' }}
+      - name: The walk
+        id: walk
         continue-on-error: true
         run: |
-          if [ "${{ github.event.inputs.scope }}" = "popup and widget only" ]; then
-            python -u run.py --headless -n 4 -m "popup or widget" | tee suite.log
+          only='${{ github.event.inputs.only }}'
+          if [ -n "$only" ] && [ "$only" != "everything" ]; then
+            python -u run.py --headless --only "$only" | tee walk.log
           else
-            python -u run.py --headless -n 4 | tee suite.log
+            python -u run.py --headless | tee walk.log
           fi
-
-      - name: The walk — every shop in step, in one browser
-        id: walk
-        if: ${{ github.event.inputs.scope != 'popup and widget only' }}
-        continue-on-error: true
-        run: python -u flow.py --headless | tee walk.log
+          exit "${PIPESTATUS[0]}"
 
       - name: What happened
         if: always()
         run: |
           # The summary answers one question first — is this safe to publish —
-          # and only then explains itself. A wall of green ticks buries the one
-          # line that matters, so passing checks are counted, not listed.
+          # and only then explains itself.
           {
-            suite_line=$(grep -hoE "[0-9]+ (of [0-9]+ checks failed|checks passed)[^|]*" suite.log 2>/dev/null | tail -1)
             # One place that counts, because `grep -c` prints its count and
-            # *also* exits 1 when the count is zero. `grep -c ... || echo 0`
-            # therefore prints two zeroes, and the arithmetic below dies on
-            # a two-line number. It failed a run that had nothing wrong with
-            # it, which is the worst way for a report to be wrong.
+            # *also* exits 1 when the count is zero.
             count() {
               [ -f "$2" ] || { echo 0; return; }
               local n
               n=$(grep -cE "$1" "$2" 2>/dev/null || true)
               echo "${n:-0}"
             }
+            failed=$(count "^\[FAIL\]" walk.log)
+            passed=$(count "^\[ok \]" walk.log)
+            blocked=$(count "^ +ok .* -- " walk.log)
 
-            failed=$(count "^  x " suite.log)
-            walk_failed=$(count "^\[FAIL\]" walk.log)
-            total=$((failed + walk_failed))
-
-            if [ "$total" -eq 0 ]; then
+            if grep -qE "^Cannot (test|walk)" walk.log; then
+              echo "# ⚠️ Did not run"
+              echo
+              grep -E "^Cannot (test|walk)" -A 3 walk.log
+            elif [ "$failed" -eq 0 ]; then
               echo "# ✅ Safe to publish"
               echo
-              echo "Everything the tool checks passed."
+              echo "Every step the walk takes did what it should."
             else
-              echo "# ❌ $total problem(s) — do not publish yet"
+              echo "# ❌ $failed step(s) went wrong — do not publish yet"
             fi
             echo
             echo "\`${BRING_ENV_NAME}\` · bringweb3 \`${BRING_BACKEND_BRANCH}\` · chromeExtension \`${BRING_FRONTEND_BRANCH}\`"
             echo
 
-            # ── what broke, and nothing else ──────────────────────────
-            if [ "$total" -gt 0 ]; then
+            if [ "$failed" -gt 0 ]; then
               echo "## What broke"
               echo
-              if [ "$failed" -gt 0 ]; then
-                # Each failure is two lines in run.py's verdict: the name, then
-                # the reason. Paired here so the reason is readable without
-                # opening the log.
-                grep -A 1 "^  x " suite.log \
-                  | sed -e 's/^  x tests\.\(.*\)/\n**\1**/' \
-                        -e 's/^      \(.*\)/\1/' -e '/^--$/d'
-                echo
-              fi
-              if [ "$walk_failed" -gt 0 ]; then
-                echo "### In the walk"
-                grep -A 4 "^\[FAIL\]" walk.log | sed -e 's/^\[FAIL\] /\n**/' \
-                  -e 's/   (\([0-9]*s\))$/** (\1)/' -e '/^--$/d'
-                echo
-              fi
-              echo "Screenshots, storage dumps and Playwright traces for every"
-              echo "failure are in **Artifacts** at the top of this page."
+              grep -A 4 "^\[FAIL\]" walk.log | sed -e 's/^\[FAIL\] /\n**/' \
+                -e 's/   (\([0-9]*s\))$/** (\1)/' -e '/^--$/d'
+              echo
+              echo "Screenshots and storage dumps for every failed step are in"
+              echo "**Artifacts** at the top of this page."
               echo
             fi
 
-            # ── the counts, for the record ────────────────────────────
             echo "## The numbers"
             echo
             echo "| | |"
             echo "|---|---|"
-            [ -n "$suite_line" ] && echo "| suite | $suite_line |"
-            walk_ok=$(count "^\[ok \]" walk.log)
-            echo "| walk | $walk_ok step(s) passed, $walk_failed failed |"
-            skipped=$(grep -oE "[0-9]+ skipped" suite.log 2>/dev/null | tail -1)
-            [ -n "$skipped" ] && echo "| not run | $skipped |"
+            echo "| steps passed | $passed |"
+            echo "| steps failed | $failed |"
+            [ "$blocked" -gt 0 ] && echo "| could not be observed (bot check, results page not recognised) | $blocked |"
             echo
 
-            if [ -n "$skipped" ]; then
-              echo "<details><summary>Which checks did not run</summary>"
+            if [ "$blocked" -gt 0 ]; then
+              echo "<details><summary>What could not be observed, and why</summary>"
               echo
               echo '```'
-              grep -hoE "SKIPPED.*" suite.log 2>/dev/null | sed 's/SKIPPED //' \
-                | sort | uniq -c | sort -rn | head -10
+              grep -E "^ +ok .* -- " walk.log | sed -E 's/^ +ok //'
               echo '```'
               echo "</details>"
               echo
@@ -199,7 +176,7 @@ jobs:
             echo "<details><summary>The walk, step by step</summary>"
             echo
             echo '```'
-            grep -E "^\[(ok |FAIL)\]|^   (ok|X) |^-- " walk.log 2>/dev/null | tail -90
+            grep -E "^=+$|^ACT |^\[(ok |FAIL)\]|^ +(ok|X) |^-- " walk.log 2>/dev/null
             echo '```'
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -208,24 +185,17 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: failures
+          name: evidence
           path: |
             artifacts/
-            suite.log
             walk.log
-            junit.xml
           retention-days: 30
           if-no-files-found: ignore
 
-      # Both runs above are `continue-on-error` so that one failing does not
-      # hide the other's results. The verdict is made here, once, on both.
       - name: Verdict
         if: always()
         run: |
-          suite='${{ steps.suite.outcome }}'
-          walk='${{ steps.walk.outcome }}'
-          echo "suite: $suite    walk: $walk"
-          if [ "$suite" = "failure" ] || [ "$walk" = "failure" ]; then
+          if [ '${{ steps.walk.outcome }}' = 'failure' ]; then
             echo "::error::Something the extension does is not what it should be. See the summary."
             exit 1
           fi

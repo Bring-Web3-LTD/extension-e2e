@@ -8,58 +8,58 @@ python run.py
 ```
 
 That brings up an environment, loads the extension it built into a real Chrome,
-drives the popup and the notification flows against live retailers, and prints
-`PASS` or the list of what broke.
+walks the QA plan against live retailers, and prints `PASS` or the list of what
+broke.
 
 It is deliberately small and fast. It is not the QA automation framework in
-`qa-automations` — that one is broader (portal, offer bar, countries, wallet
-platforms, history, dashboards) and still being built. This is the extension
-only, usable today.
+`qa-automations` — that one is broader (portal, countries, wallet platforms,
+history, dashboards) and still being built. This is the extension only, usable
+today.
 
 ---
 
-## What it runs
+## How it runs
 
-| Area | QA plan | File |
+The way a person would, in **one browser**:
+
+1. Three shops open in **three tabs**. Every popup step happens on all three
+   — the offer appears, activate, close, opt-out, stand-down — and after each
+   step the shared `quietDomains` list is read and checked. The list is
+   cleared only between scenarios, after every tab has finished the step.
+2. The follow-up rule, the wallet, the widget (on the one shop that has it)
+   and the offer bar (a search-results page linking to a retailer) each get a
+   tab of their own.
+3. The notifications: the reward check and its backoffs, then the five
+   variants, produced by seeding purchases into the environment's database.
+
+Steps that only read or click run on the three tabs **at once**. Steps that
+end in a popup check — navigating to the shop, activating, revisiting — run
+**one tab after another**, with the tabs still open: three checks in the same
+instant have the server answering one with `quietDomainsChanged`, and the SDK
+then replaces its whole list, wiping what the other tabs just wrote. Nobody
+clicks Activate in three tabs in the same tenth of a second either.
+
+Every wait is for a **state**, not a time — a row appearing, a phase
+changing, a frame rendering — with a generous ceiling. Fixed waits are used
+only where the claim is an absence ("no popup appears").
+
+---
+
+## What it covers
+
+| Act | QA plan | File |
 |---|---|---|
-| Popup appears, closes, silence is scoped and expires | 1.1, 1.2, 1.6, 1.7, 7.2 | `tests/test_popup.py` |
-| Activation, confirmation, wildcard silence, phase | 1.3 | `tests/test_activate.py` |
-| Opt-out scope, duration, the removed 60-day cap | 1.4, 7.6 | `tests/test_optout.py` |
-| Hijack protection and stand-down | 1.8 | `tests/test_standdown.py` |
-| Wallet states and the fast activation path | 1.5 | `tests/test_wallet.py` |
-| Notification request storm, backoff, recovery | 3.1 | `tests/test_notifications.py` |
-| The bar over search results: appears, closes, activates, opts out | 2 | `tests/test_offerbar.py` |
+| The popup: appears, text, terms, activate, close, navigation, silence expires, expired rows | 1.1 1.2 1.3 1.6 1.7 1.9 1.10 1.12 7.2 7.7 | `tests/popup.py` |
+| Opt-out: this site × 3 durations, all sites × 3, nothing until Apply, lazy cleanup | 1.4, 4 | `tests/optout.py` |
+| Stand-down: marker on the URL, on a hop, whole domain, extend never shorten, never downgrade | 1.8 | `tests/standdown.py` |
+| Follow-up rule: the thank-you page reports once and stops | 1.9 | `tests/followups.py` |
+| Wallet: none, fast path, fresh activation after connecting, stays connected, disconnect | 1.5 | `tests/wallet.py` |
+| Widget: badge, expand, both closes, persistence, `isWidget` analytics | 7.1 7.3 | `tests/widget.py` |
+| Offer bar: appears, close, activate, opt-out, keyword trigger, stood-down shop | 2 | `tests/offerbar.py` |
+| Notifications: request storm, backoffs, recovery, the five variants, rounding, close, stop reminding | 3 3.1 | `tests/notifications.py` |
 
-**Deliberately not covered.** These were built, run, and then removed as not
-worth their minutes — the decision was made with the results in front of us,
-not by guessing:
-
-- Saved `bring_*` state: the 23 keys, the upgrade that drops old ones, a
-  corrupted retailer list being re-downloaded.
-- Robustness: no network, a server that comes back, the debug logger's levels,
-  and an integrator who forgets a permission being told which one.
-- Injection: a host page that wipes the iframe, a third-party frame beside it,
-  an SPA route change leaving exactly one popup.
-- The iframe URL: the token riding in the fragment rather than the query.
-- Follow-ups, all but one: the counter, scopes, ttl, surviving a worker
-  restart. The thank-you page rule is kept as the one that proves the feature
-  works at all.
-
-**Not covered for other reasons**, and honest about it:
-
-- The five notification variants (section 3). They are chosen by fields the
-  server signs into the notification token, and those come from rows in the
-  environment's `purchases` table. Those tests carry the `needs_db` marker and
-  skip with an explanation rather than pretending.
-- Follow-up matchers — thank-you page, pop-on-the-Nth-visit (section 1.9).
-  The rule is armed by the server; the client half is covered where it can be
-  (expired rows not shadowing live ones).
-- Which of the bar's two layouts a search gets. The server answers with
-  `isOfferBar`, with `framed`, or with both, and the SDK prefers `framed` — so
-  the surface served today is the top bar. The tests drive whichever arrives
-  rather than requiring one, which means they would not notice the server
-  quietly switching between them.
-- Portal, wallet platform themes, countries.
+`COVERAGE.md` maps every line of the plan to a step, and lists what is not
+covered and why.
 
 ---
 
@@ -75,45 +75,22 @@ cp .env.example .env            # then fill in ECKO_API_KEY
 ```
 
 AWS credentials come from the usual place (`aws configure`, `AWS_PROFILE`, or
-the CI role). The suite needs ECS, CloudFormation and S3 read access.
+the CI role). The walk needs ECS, CloudFormation and S3 read access.
 
 ---
 
 ## Running it
 
 ```bash
-python run.py                       # everything, one worker per retailer
-python run.py -m popup              # one area, by marker
-python run.py -k standdown          # one file
-python run.py --headless -n 4       # how CI runs it
+python run.py                       # everything, in order
+python run.py --only popup          # one act (popup, optout, standdown, followups,
+                                    #          wallet, widget, offerbar, notifications)
+python run.py --headless            # how CI runs it
 python run.py --skip-env            # environment is already up, do not ask AWS
 python run.py --reuse-extension     # and do not re-download it either
 python run.py --skip-preflight      # do not check the retailers first
+python run.py --retailers https://a.com,https://b.com,https://c.com
 ```
-
-Markers: `popup`, `notification`, `storage`, `robustness`, `needs_db`.
-
-### One profile per lane, not per test
-
-Each worker opens **one** Chrome and keeps it for its whole retailer. Same
-Chrome binary, separate processes, one profile each.
-
-The profile is deliberately *not* thrown away between tests. A real user has
-one profile that accumulates — an id, a downloaded retailer list, a warm cache,
-a migration that ran once. Recreating it per test would mean testing "the very
-first run, ever" hundreds of times and the ordinary case never, and first-run
-is the one state a real user is almost never in.
-
-What is cleared between tests is only what the last test wrote: `quietDomains`
-and the global opt-out. Those genuinely poison the next test — a close silences
-the retailer for thirty minutes, and the next test would report a missing popup
-for a product behaving exactly as designed. It is the same reset the larger QA
-framework performs between its checks.
-
-The handful of tests that really are about a first install ask for
-`fresh_context` and get a virgin profile. `tests/test_harness.py` checks both
-halves of this hold, because when the reset silently stops running, dozens of
-tests fail with messages that blame the product.
 
 ### The environment
 
@@ -123,119 +100,84 @@ Every run calls the same `dev-env-deployer` ECS task the QA automation uses:
 2. Up and healthy → **reuse it**, after checking it actually serves retailers.
 3. Mid-deploy → wait for whoever is deploying it.
 4. Broken → refuse, and print the deployer command that removes it. This tool
-   never deploys over or repairs an environment; that belongs to the deployer,
-   which knows about the shared database, base-path mappings and secrets a
-   hand-rolled cleanup would silently skip.
+   never deploys over or repairs an environment; that belongs to the deployer.
 5. Absent → deploy it from `main` + `main`, wait for CloudFormation, then wait
    for it to actually serve a retailer list.
 
 Then the mock extension that environment built is pulled from S3 and loaded.
+`BRING_BACKEND_BRANCH` and `BRING_FRONTEND_BRANCH` pick the branches.
 
-Both branches are `main` today. `BRING_BACKEND_BRANCH` and
-`BRING_FRONTEND_BRANCH` change that without touching code, which is how this
-becomes a pre-merge check later.
+### The preflight
+
+A named retailer goes stale the moment the environment stops carrying it, and
+then every popup step fails with "no popup" — correct product behaviour,
+reported as a bug. So each run asks first: navigate to each retailer and watch
+whether the extension sent a `/check/popup` at all. Nothing usable and the run
+stops with exit code `2` and says which retailer to replace.
 
 ---
 
 ## When something fails
 
-`run.py` ends with the list of failed checks and a one-line reason each.
-Per-failure evidence lands in `artifacts/<test>/`:
+Every step prints one line per shop. A failed step leaves evidence in
+`artifacts/<act>/<NN-step>/`:
 
-- `trace.zip` — open with `playwright show-trace`; every action, DOM snapshot
-  and network call
-- `storage.json` — every `bring_*` value at the moment of failure, which is
-  usually the whole explanation
-- `page-N.png` and `page-N.url`
+- `<shop>.png` and `<shop>.url` — the page at the moment of failure
+- `storage.json` — every `bring_*` value, which is usually the whole explanation
 
-Passing tests leave nothing behind.
+A shop that answered with a bot check, or a Google results page the extension
+did not recognise, is printed with `--` and leaves the same evidence — it is
+not a failure, because nothing was observed, but the page is worth a look.
 
-Exit codes: `0` pass · `1` something failed · `3` the environment could not be
-brought up (not a product finding).
+Exit codes: `0` pass · `1` something failed · `2` no usable retailer ·
+`3` the environment could not be brought up (not a product finding).
 
 ---
 
 ## How it is put together
 
 ```
-run.py              environment, extension, pytest, verdict
+run.py              environment, extension, preflight, the walk, verdict
 bring/
+  walk.py           one browser, the tabs, step/each/one, the tally, evidence
   config.py         ARNs, branches, names, keys
   env.py            ECS deploy-or-reuse, and the extension zip
-  browser.py        Chrome with the extension; one profile per test
+  browser.py        Chrome with the extension
   storage.py        read/write bring_* through the SDK's own bringCache
   popup.py          finding the iframe; every selector in one place
-  pages.py          controlled markup served on a real retailer's URL
+  pages.py          controlled markup and redirects on a real retailer's URL
   netspy.py         count and steer the extension's own fetches
-  retailers.py      which shops to test against
+  retailers.py      which shops to walk through
   preflight.py      are those shops still retailers on this environment
-tests/              one file per QA plan area
+  db.py, seed.py    the environment's database, and the purchases that
+                    produce each notification variant
+tests/
+  steps.py          arrive, activate, close, opt out, revisit
+  <act>.py          one file per area of the plan; each is a list of steps
 ```
 
 Three things are worth knowing before changing it.
 
 **Storage is written, not just read.** Half the QA plan is time-gated — a
 30-minute silence, a two-hour stand-down, an hour of backoff, a "forever"
-opt-out that has to outlive 60 days. No suite can wait those out, and all of
-them are timestamps. `storage.expire_quiet` and `storage.expire_key` move the
-clock instead. Writes go through `bringCache` rather than `chrome.storage`
-directly, because the SDK reads a value from its in-memory cache first — a raw
-write lands in the browser but not in the extension.
+opt-out that has to outlive 60 days. Nothing can wait those out, and all of
+them are timestamps: the walk moves the clock. Writes go through `bringCache`
+rather than `chrome.storage` directly, because the SDK reads from its
+in-memory cache first. Only rows in the shape the SDK itself writes are ever
+written; the tool behaves like a user, never like a corrupted profile.
 
-**Some pages are ours.** A shop does not hydrate-and-wipe on demand, does not
-always carry a captcha frame, and has no route we can push. So Playwright
-answers the retailer's own URL with markup we wrote (`bring/pages.py`): the
-navigation, the domain and the extension's view of it stay real, only the DOM
-is ours. Anything asserting on real retailer content must not use these.
+**Some pages are ours.** A coupon-site redirect through an affiliate host
+cannot be asked for on demand, so Playwright serves the entry page and the
+3xx hop (`bring/pages.py`): the navigation chain, the domain and the
+extension's view of it stay real. The offer bar's search-results page is
+served the same way, on Google's own search URL, with a link to the retailer:
+Google gives a fresh browser a different page each time (another language,
+no retailer link, a captcha after a few searches — measured), and the bar is
+about what the extension does with a results page, not about Google.
 
 **Network assertions come from inside the worker.** The calls under test are
-made by the MV3 service worker, and whether route interception sees a worker's
-requests varies by browser build — a counter that silently records nothing
-makes "the fix works" and "the test is broken" look identical.
-`bring/netspy.py` wraps `fetch` on the worker instead, which also lets a test
-produce the three failures section 3.1 is about: a dead network, a WAF block
-page, and an error body with no `nextCall`.
-
----
-
-## Retailers, and how the run is spread
-
-**The retailer is the unit of parallelism.** Every test runs once per retailer
-in `bring/retailers.py`, and `--dist loadgroup` keeps one shop's tests on one
-worker — so with four shops and `-n 4`, each worker owns a shop and works
-through it in its own browser. One browser at a time per shop matters: four
-workers hammering the same site is the quickest way to earn a bot check, and a
-bot check looks exactly like a missing popup.
-
-More workers than shops does not go faster; add a shop to add a lane.
-
-Two is the floor. Close, activate and opt-out each have to prove the silence
-they wrote applies to *this* shop and **not** to another, so every retailer
-also gets a control taken from the rest of the list.
-
-The list is named, not discovered. `/domains` answers with compressed regex
-patterns rather than a list of shops, so there is no cheap way to ask the
-environment for a usable target; the broader QA framework keeps a MySQL
-catalogue for that, and dragging one in here would cost more than it is worth.
-
-```bash
-BRING_RETAILERS=https://a.com,https://b.com python run.py   # replace the list
-BRING_RETAILER=missoma python run.py                        # pin to one lane
-```
-
-Pinning is how a single failure is reproduced without waiting on the other
-lanes. With one retailer there is no control, so the scope tests skip and say so.
-
-### The preflight
-
-A named retailer goes stale the moment the environment stops carrying it, and
-then every popup test fails with "no popup" — correct product behaviour,
-reported as a bug, twenty minutes in. So each run asks first: navigate to each
-retailer and watch whether the extension sent a `/check/popup` at all.
-
-- popup shown → usable
-- checked, but the server declined → recognised, no offer here
-- no check at all → never matched the retailer list
-
-Nothing usable, or only one, and the run stops with exit code `2` and says
-which retailer to replace. `--skip-preflight` turns it off.
+made by the MV3 service worker; `bring/netspy.py` wraps `fetch` there, which
+also lets the walk produce the three failures section 3.1 is about. MV3
+recycles the worker freely and the wrapper with it, so a missing request is
+never taken as proof on its own — the walk looks for the mark the product
+leaves in storage instead.

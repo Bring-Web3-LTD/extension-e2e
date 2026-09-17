@@ -216,16 +216,16 @@ database. Without them those tests skip and say why, and everything else runs.
 **Actions → Release check → Run workflow.**
 
 Defaults are `main` and `main`, and the environment is `qa-extension`. Change
-them to test a branch before it merges.
+them to test a branch before it merges. `only` runs a single act (popup,
+optout, standdown, followups, wallet, widget, offerbar, notifications).
 
-About half an hour, and you do not have to watch. When it finishes:
+About twenty minutes (the environment deploy, when one is needed, adds its own), and you do not have to watch. When it finishes:
 
-- the top of the run says **PASS**, or lists exactly what broke
-- **Artifacts** holds a screenshot, a storage dump and a Playwright trace for
-  each failure
-
-Open a trace with `npx playwright show-trace trace.zip` — it replays the whole
-test, every click and network call.
+- the top of the run says **Safe to publish**, or lists exactly which steps
+  went wrong, one line per shop
+- **Artifacts** holds a screenshot and a storage dump for each failed step,
+  and for each step that could not be observed (a bot check, a results page
+  the extension did not recognise)
 
 ---
 
@@ -244,6 +244,7 @@ attach, or attached to a different role than the one in `AWS_ROLE_ARN`.
 **Environment fails to come up** — the deployer itself, not this tool. Its
 own logs are in the ECS task; the run prints the task id.
 
-**Lots of tests skipped** — a shop answered with a bot check instead of its
-site. The run says which. Not a failure of the extension, but those checks did
-not happen; see the retailer list in `bring/retailers.py`.
+**Lines marked `--`** — a shop answered with a bot check instead of its
+site, or Google served a page the extension does not watch. The run says which
+and keeps the screenshot. Not a failure of the extension, but that step did not
+observe anything; see the retailer list in `bring/retailers.py`.

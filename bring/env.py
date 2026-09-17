@@ -3,7 +3,6 @@ import shutil
 import time
 import zipfile
 from pathlib import Path
-
 import boto3
 import requests
 from botocore.exceptions import ClientError
@@ -40,14 +39,6 @@ class Environment:
             ) from e
 
     def age_minutes(self):
-        """How long this environment has existed, or None if it does not.
-
-        A temporary environment destroys itself after `TTL_HOURS`, and it does
-        not care that a run is halfway through. When that happened, every check
-        after the moment of death failed at once, on all four shops, with "no
-        popup appeared" — which reads like the extension collapsing and is
-        really a server that stopped answering.
-        """
         cf = boto3.client("cloudformation", region_name=self.region)
         try:
             stacks = cf.describe_stacks(StackName=cfg.stack_name(self.name)).get("Stacks", [])

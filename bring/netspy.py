@@ -67,30 +67,59 @@ _INSTALL = """
 """
 
 
+#: The mode each context was last installed with, so a re-arm after a worker
+#: restart puts back what the test asked for rather than a default.
+_mode: dict = {}
+
+
 async def install(context, mode: str = PASS):
     """Start counting the worker's requests, in *mode*."""
+    _mode[id(context)] = mode
     worker = await wake_worker(context)
     await worker.evaluate(_INSTALL, mode)
 
 
-async def installed(context) -> bool:
-    worker = await wake_worker(context)
-    return bool(await worker.evaluate("() => !!globalThis.__bringSpy"))
-
-
 async def set_mode(context, mode: str):
     """Change how the next calls are answered, keeping the counts so far."""
+    _mode[id(context)] = mode
     worker = await wake_worker(context)
     await worker.evaluate(
         "(mode) => { if (globalThis.__bringSpy) globalThis.__bringSpy.mode = mode; }",
         mode)
 
 
+class SpyGone(AssertionError):
+    """The recorder was not installed when the question was asked.
+
+    MV3 kills an idle service worker and starts a fresh one on the next event,
+    and the fresh one has the browser's own `fetch` — the patch, the counts and
+    the mode are all gone with the old global scope. Every request still goes
+    out and still reaches the server; nothing is watching it.
+
+    This used to surface as an empty list, which reads exactly like "no request
+    was made" — and a test asserting that a request happened failed, blaming
+    the extension for something the recorder simply missed. Measured: a
+    followup fired, the server logged the report arriving, and the test was
+    told nothing had been sent.
+    """
+
+
 async def calls(context, contains: str = "") -> list:
-    """Every request the worker made, optionally only those matching *contains*."""
+    """Every request the worker made, optionally only those matching *contains*.
+
+    Raises `SpyGone` rather than returning an empty list when the recorder is
+    not there: an absence of evidence is not evidence of absence.
+    """
     worker = await wake_worker(context)
-    seen = await worker.evaluate("() => (globalThis.__bringSpy || {}).calls || []")
-    return [c for c in seen if contains in (c.get("url") or "")]
+    state = await worker.evaluate(
+        "() => globalThis.__bringSpy ? { on: true, calls: globalThis.__bringSpy.calls }"
+        "                            : { on: false }")
+    if not state.get("on"):
+        raise SpyGone(
+            "the request recorder is gone — the service worker restarted since "
+            "it was installed, so nothing was watching. This is the tool's "
+            "blind spot, not a missing request")
+    return [c for c in state["calls"] if contains in (c.get("url") or "")]
 
 
 async def await_call(context, contains: str, timeout: float = 10) -> int:
@@ -102,8 +131,20 @@ async def await_call(context, contains: str, timeout: float = 10) -> int:
     """
     import asyncio
     deadline = asyncio.get_event_loop().time() + timeout
+    restarts = 0
     while True:
-        seen = len(await calls(context, contains))
+        try:
+            seen = len(await calls(context, contains))
+        except SpyGone:
+            # Re-arm and keep waiting. The window before this moment is lost,
+            # so the count restarts — but a request that has not happened yet
+            # will still be seen, which is what a waiter is for.
+            restarts += 1
+            # In the mode the test chose, not PASS: a backoff test runs in
+            # FAIL, and healing it into PASS would let the request succeed and
+            # quietly switch the test's own scenario off.
+            await install(context, _mode.get(id(context), PASS))
+            seen = 0
         if seen or asyncio.get_event_loop().time() >= deadline:
             return seen
         await asyncio.sleep(0.25)
@@ -111,12 +152,6 @@ async def await_call(context, contains: str, timeout: float = 10) -> int:
 
 async def count(context, contains: str = "") -> int:
     return len(await calls(context, contains))
-
-
-async def errors(context) -> list:
-    """Anything the wrapper itself threw. Should always be empty."""
-    worker = await wake_worker(context)
-    return await worker.evaluate("() => (globalThis.__bringSpy || {}).errors || []")
 
 
 async def reset(context):
@@ -130,7 +165,6 @@ async def reset(context):
 
 NOTIFICATION_CHECK = "/check/notification"
 POPUP_CHECK = "/check/popup"
-DOMAINS = "/domains"
 
 
 async def last_body(context, contains: str):
@@ -170,15 +204,6 @@ class PageCalls:
             batch = body.get("events")
             found.extend(batch if isinstance(batch, list) else [body])
         return found
-
-
-async def server_quiet_ms(context):
-    """The silence window the last popup check told the client to write, or None."""
-    body = await last_body(context, POPUP_CHECK)
-    if not isinstance(body, dict):
-        return None
-    value = body.get("time")
-    return int(value) if isinstance(value, (int, float)) else None
 
 
 async def server_said_offerbar(context):

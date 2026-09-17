@@ -1,6 +1,5 @@
 import os
 from contextlib import contextmanager
-
 from bring import config as cfg
 
 try:

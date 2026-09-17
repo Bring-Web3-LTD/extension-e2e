@@ -1,6 +1,5 @@
 import os
 from pathlib import Path
-
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -22,7 +21,6 @@ EXTENSION_S3_PREFIX = "extensions"
 API_BASE_URL = "https://api.bringweb3.io"
 
 BACKEND_REPO = "Bring-Web3-LTD/bringweb3"
-FRONTEND_REPO = "Bring-Web3-LTD/chromeExtension"
 
 # Both branches are pinned to main for now: this tool answers "is the extension
 # healthy today", not "what did this PR change". Overridable so it can answer
